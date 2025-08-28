@@ -1,0 +1,176 @@
+-- SkillService.server.lua
+-- Buy/Upgrade + Equip with level-cap. Mirrors equips to Hero and keeps plot element.
+-- Accepts legacy ids (aquaburst/quake) and writes BOTH old & new attribute names.
+
+local Players  = game:GetService("Players")
+local RS       = game:GetService("ReplicatedStorage")
+
+local Remotes  = RS:WaitForChild("Remotes")
+local RE_Buy   = Remotes:WaitForChild("SkillPurchaseRequest")
+local RE_Equip = Remotes:WaitForChild("SkillEquipRequest")
+
+-- ===================== tuning =====================
+local MAX_LEVEL       = 5
+local STARTING_MONEY  = 100000
+
+-- Canonical ids and aliases we accept from UI.
+local CANON = { firebolt = true, aquabarrier = true, quakepulse = true }
+local ALIAS = {
+	-- fire
+	fire       = "firebolt", bolt       = "firebolt", firebolt   = "firebolt",
+	-- water
+	aquaburst  = "aquabarrier", aquabarrier = "aquabarrier", barrier = "aquabarrier",
+	-- earth
+	quake      = "quakepulse", quakepulse  = "quakepulse", pulse = "quakepulse",
+}
+
+local function norm(id : string)
+	id = string.lower(tostring(id or "")):gsub("%s+", "")
+	return ALIAS[id]
+end
+
+-- Optional external SkillConfig (merged)
+local SkillConfig = RS:FindFirstChild("SkillConfig")
+local CFG = {
+	firebolt    = { baseCost = 25, costMul = 1.35 },
+	aquabarrier = { baseCost = 25, costMul = 1.35 },
+	quakepulse  = { baseCost = 25, costMul = 1.35 },
+}
+if SkillConfig then
+	local ok, mod = pcall(require, SkillConfig)
+	if ok and type(mod) == "table" then
+		for k, v in pairs(mod) do
+			local key = norm(k)
+			if key and type(v) == "table" then
+				local cur = CFG[key] or {}
+				CFG[key] = {
+					baseCost = tonumber(v.baseCost) or cur.baseCost or 25,
+					costMul  = tonumber(v.costMul)  or cur.costMul  or 1.35,
+				}
+			end
+		end
+	end
+end
+
+local ElemFromSkill = {
+	firebolt    = "Fire",
+	aquabarrier = "Water",
+	quakepulse  = "Earth",
+}
+
+-- ===================== helpers =====================
+local function lvlAttr(id) return "Skill_" .. id end
+
+local function getMoney(plr : Player)
+	local ls = plr:FindFirstChild("leaderstats")
+	return ls and ls:FindFirstChild("Money")
+end
+
+local function heroFor(plr : Player)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return end
+	for _, m in ipairs(plots:GetChildren()) do
+		if m:IsA("Model") and (m:GetAttribute("OwnerUserId") == plr.UserId) then
+			local h = m:FindFirstChild("Hero", true)
+			if h and h:IsA("Model") then return h, m end
+		end
+	end
+end
+
+local function costFor(skillId, nextLevel)
+	local cfg = CFG[skillId]
+	if not cfg then return 25 end
+	return math.floor((cfg.baseCost or 25) * ((cfg.costMul or 1.35) ^ (nextLevel - 1)))
+end
+
+-- Write BOTH canonical and legacy attribute names (so any UI reads it).
+local function setLevelAttrs(instance : Instance, canonId : string, level : number)
+	instance:SetAttribute(lvlAttr(canonId), level)
+	if canonId == "aquabarrier" then
+		instance:SetAttribute(lvlAttr("aquaburst"), level)  -- legacy
+	elseif canonId == "quakepulse" then
+		instance:SetAttribute(lvlAttr("quake"), level)       -- legacy
+	end
+end
+
+-- ===================== Buy / Upgrade =====================
+RE_Buy.OnServerEvent:Connect(function(plr : Player, rawId)
+	local id = norm(rawId)
+	if not (id and CANON[id]) then return end
+
+	local cur = tonumber(plr:GetAttribute(lvlAttr(id))) or 0
+	if cur >= MAX_LEVEL then return end
+
+	local nextLevel = cur + 1
+	local price = costFor(id, nextLevel)
+
+	local M = getMoney(plr)
+	if not (M and M.Value >= price) then return end
+
+	M.Value -= price
+	setLevelAttrs(plr, id, nextLevel)
+
+	local hero = heroFor(plr)
+	if hero then setLevelAttrs(hero, id, nextLevel) end
+end)
+
+-- ===================== Equip =====================
+RE_Equip.OnServerEvent:Connect(function(plr : Player, payload)
+	local hero, plot = heroFor(plr)
+
+	local function setEquip(which, rawId)
+		if rawId == nil then
+			plr:SetAttribute(which, nil)
+			if hero then hero:SetAttribute(which, nil) end
+			return
+		end
+		local id = norm(rawId); if not id then return end
+		plr:SetAttribute(which, id)
+		if hero then hero:SetAttribute(which, id) end
+		if which == "Equip_Primary" and plot then
+			local elem = ElemFromSkill[id]
+			if elem then plot:SetAttribute("LastElement", elem) end
+		end
+	end
+
+	if typeof(payload) == "table" then
+		if payload.primary ~= nil then setEquip("Equip_Primary", payload.primary) end
+		if payload.utility ~= nil then
+			setEquip("Equip_Utility", payload.utility)
+			if payload.primary == nil then setEquip("Equip_Primary", payload.utility) end
+		end
+	elseif type(payload) == "string" then
+		setEquip("Equip_Primary", payload)
+	end
+end)
+
+-- ===================== Player defaults =====================
+Players.PlayerAdded:Connect(function(plr : Player)
+	-- leaderstats money
+	local ls = plr:FindFirstChild("leaderstats")
+	if not ls then ls = Instance.new("Folder"); ls.Name="leaderstats"; ls.Parent=plr end
+	local money = ls:FindFirstChild("Money")
+	if not money then money = Instance.new("IntValue"); money.Name="Money"; money.Parent=ls end
+	if (money.Value or 0) < STARTING_MONEY then money.Value = STARTING_MONEY end
+
+	-- default levels for both canonical and legacy keys
+	for id,_ in pairs(CANON) do
+		if plr:GetAttribute(lvlAttr(id)) == nil then plr:SetAttribute(lvlAttr(id), 0) end
+	end
+	if plr:GetAttribute(lvlAttr("aquaburst")) == nil then plr:SetAttribute(lvlAttr("aquaburst"), 0) end
+	if plr:GetAttribute(lvlAttr("quake"))     == nil then plr:SetAttribute(lvlAttr("quake"), 0) end
+
+	-- >>> ensure Firebolt Lv1 and equip it on first join
+	if (tonumber(plr:GetAttribute(lvlAttr("firebolt"))) or 0) < 1 then
+		plr:SetAttribute(lvlAttr("firebolt"), 1)
+		local hero = heroFor(plr)
+		if hero then hero:SetAttribute(lvlAttr("firebolt"), 1) end
+	end
+
+	-- default primary = firebolt (mirror to hero as well)
+	if plr:GetAttribute("Equip_Primary") == nil then
+		plr:SetAttribute("Equip_Primary", "firebolt")
+		local hero = heroFor(plr)
+		if hero then hero:SetAttribute("Equip_Primary", "firebolt") end
+	end
+end)

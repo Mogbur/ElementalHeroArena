@@ -1,0 +1,25 @@
+# Project place files (root)
+#/ElementalHeroArena.rbxl
+/ElementalHeroArena.rbxlx
+
+# Roblox place/model files (anywhere)
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# Roblox Studio lock files
+*.rbxl.lock
+*.rbxlx.lock
+
+# Editors
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Optional build/output dirs (if you ever generate them)
+build/
+out/
