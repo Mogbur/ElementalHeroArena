@@ -3,21 +3,26 @@
 -- heals 50% between wins, and cleans leftovers. Enemies are sanitized so they
 -- stand on the ground and actually path.
 
-local Players            = game:GetService("Players")
-local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local ServerStorage      = game:GetService("ServerStorage")
-local CollectionService  = game:GetService("CollectionService")
-local TweenService       = game:GetService("TweenService")
-local Debris             = game:GetService("Debris")
-local PhysicsService     = game:GetService("PhysicsService")  -- used for CollisionGroup
-local SHOW_WORLD_BANNER = false  -- kill the big mid-arena banner
-local RS = game:GetService("ReplicatedStorage")
-local SS = game:GetService("ServerStorage")
-local WavesFolder = ReplicatedStorage:WaitForChild("Waves")
-local Waves       = require(WavesFolder:WaitForChild("Waves"))
-local Composer    = require(WavesFolder:WaitForChild("Composer"))
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage     = game:GetService("ServerStorage")
+local TweenService      = game:GetService("TweenService")
+local Debris            = game:GetService("Debris")
+local PhysicsService    = game:GetService("PhysicsService")
 
-local EnemyFactory = require(SSS.RojoServer.Modules.EnemyFactory)
+local RSM        = ReplicatedStorage:WaitForChild("Modules")
+local EnemyCommon   = require(RSM.Enemy.EnemyCommon)
+local EnemyCatalog  = require(RSM.Enemy.EnemyCatalog)
+local WavesComposer = require(RSM.Waves.Composer)
+local SkillConfig   = require(RSM.SkillConfig)
+local SkillTuning   = require(RSM.SkillTuning)
+local DamageNumbers = require(RSM.DamageNumbers)
+
+local SSS   = game:GetService("ServerScriptService")
+local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
+local EnemyFactory = require(SMods.EnemyFactory)
+local CollectionService = game:GetService("CollectionService")
+
 -- Optional if you need them directly here:
 -- local EnemyCommon  = require(RS.Enemy.EnemyCommon)
 -- local EnemyCatalog = require(RS.Enemy.EnemyCatalog)

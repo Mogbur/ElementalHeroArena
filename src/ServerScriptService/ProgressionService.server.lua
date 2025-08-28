@@ -27,7 +27,8 @@ ensureEvent("SkillPurchaseRequest")
 ensureEvent("SkillEquipRequest")
 
 -- === Progression init ===
-local Progression = require(script.Parent:WaitForChild("Progression"))
+local SSS = game:GetService("ServerScriptService")
+local Progression = require(SSS.RojoServer.Modules.Progression)
 
 local function onPlayerAdded(plr)
 	Progression.InitPlayer(plr)

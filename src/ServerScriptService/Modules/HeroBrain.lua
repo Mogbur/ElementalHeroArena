@@ -7,7 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
 local RunService        = game:GetService("RunService")
 
-local DamageNumbers     = require(ReplicatedStorage:WaitForChild("DamageNumbers"))
+local DamageNumbers     = require(ReplicatedStorage.Modules.DamageNumbers)
 local RE_VFX            = ReplicatedStorage:FindFirstChild("SkillVFX") -- optional, nil-safe
 
 local Brain = {}

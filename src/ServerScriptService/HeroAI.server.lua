@@ -9,7 +9,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local PLOTS = workspace:FindFirstChild("Plots") or workspace
 local PLOT_NAME_PATTERN = "^BasePlot%d+$"
 
-local SkillConfig = require(ReplicatedStorage:WaitForChild("SkillConfig"))
+local SkillConfig = require(ReplicatedStorage.Modules.SkillConfig)
 
 -- -------- helpers --------
 local function isPlot(x) return x:IsA("Model") and x.Name:match(PLOT_NAME_PATTERN) end

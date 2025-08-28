@@ -4,7 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local PLOTS = workspace:FindFirstChild("Plots") or workspace
-local Seeds = require(ReplicatedStorage:WaitForChild("SeedConfig"))
+local Seeds = require(ReplicatedStorage.Modules.SeedConfig)
 local Progression = require(ServerScriptService:WaitForChild("Progression"))
 
 local DEFAULT_SEED_ID = "Blueberry"
