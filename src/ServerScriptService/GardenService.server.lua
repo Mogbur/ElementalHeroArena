@@ -1,11 +1,13 @@
 -- Planter crops -> cash + essence + hero XP
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
+local RS  = game:GetService("ReplicatedStorage")
+local SSS = game:GetService("ServerScriptService")
 
-local PLOTS = workspace:FindFirstChild("Plots") or workspace
-local Seeds = require(ReplicatedStorage.Modules.SeedConfig)
-local Progression = require(ServerScriptService:WaitForChild("Progression"))
+local Shared  = RS:WaitForChild("Modules")
+local Rojo    = SSS:WaitForChild("RojoServer")
+local SrvMods = Rojo:WaitForChild("Modules")
+
+local SeedConfig  = require(Shared:WaitForChild("SeedConfig"))
+local Progression = require(SrvMods:WaitForChild("Progression"))
 
 local DEFAULT_SEED_ID = "Blueberry"
 local PlotState = {} -- [plot] = {capacity, plants={...}, visualFolder}

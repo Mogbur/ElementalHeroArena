@@ -1,6 +1,5 @@
 -- SkillConfig.lua  (stats proxy to SkillTuning)
-local RS = game:GetService("ReplicatedStorage")
-local T  = require(RS:WaitForChild("SkillTuning"))
+local SkillTuning = require(script.Parent:WaitForChild("SkillTuning"))
 
 local cfg = {}
 

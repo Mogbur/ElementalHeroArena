@@ -1,4 +1,7 @@
 local Progression = {}
+local SSS = game:GetService("ServerScriptService")
+local Progression = require(SSS.RojoServer.Modules.Progression)
+
 local MAX_LEVEL = 50
 local function xpToNext(level) return math.floor(20 + (level ^ 1.75) * 8) end
 local function findPlayersPlot(uid)
