@@ -1,38 +1,30 @@
--- Minimal incoming-damage numbers (players + Hero models only).
+-- ServerScriptService/HeroDamageNumbers.server.lua
+-- Minimal incoming-damage numbers (players + Hero models only), rendered on the server.
+
 local RS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
-local Remotes = RS:WaitForChild("Remotes")
-local RE_DMG  = Remotes:WaitForChild("DamageNumbers")
 
-local last = setmetatable({}, {__mode="k"}) -- weak keys so we don't leak hums
+local DamageNumbers = require(RS:WaitForChild("Modules"):WaitForChild("DamageNumbers"))
 
 local function rootOf(model)
 	return model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
 end
 
-local function isEnemyModel(model)
-	return model and (model:GetAttribute("IsEnemy") == true or model.Name == "Enemy")
+local function popIncoming(model, amount)
+	local r = rootOf(model)
+	if not r then return end
+	DamageNumbers.pop(r, math.floor(amount + 0.5), Color3.fromRGB(255, 80, 80), { sizeMul = 0.85 })
 end
 
 local function attach(model, hum)
 	if not (model and hum) then return end
-	if isEnemyModel(model) then return end -- don't show for enemies here
-	last[hum] = hum.Health
-
+	local last = hum.Health
 	hum.HealthChanged:Connect(function(h)
-		local prev = last[hum] or h
-		last[hum] = h
+		local prev = last
+		last = h
 		local delta = prev - h
 		if delta > 0 then
-			local r = rootOf(model)
-			if r then
-				RE_DMG:FireAllClients({
-					amount = math.floor(delta + 0.5),
-					pos    = r.Position,
-					color  = Color3.fromRGB(255, 80, 80),
-					kind   = "incoming", -- stays SMALL in your SkillVFX
-				})
-			end
+			popIncoming(model, delta)
 		end
 	end)
 end
@@ -57,7 +49,6 @@ local function tryAttachHero(model)
 	end
 end
 
--- initial scan + future spawns
 task.defer(function()
 	local plots = workspace:FindFirstChild("Plots")
 	if plots then

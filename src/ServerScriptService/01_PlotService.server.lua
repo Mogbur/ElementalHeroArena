@@ -13,7 +13,7 @@ local PhysicsService    = game:GetService("PhysicsService")
 local RSM        = ReplicatedStorage:WaitForChild("Modules")
 local EnemyCommon   = require(RSM.Enemy.EnemyCommon)
 local EnemyCatalog  = require(RSM.Enemy.EnemyCatalog)
-local WavesComposer = require(RSM.Waves.Composer)
+local Waves = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Waves"):WaitForChild("Waves"))
 local SkillConfig   = require(RSM.SkillConfig)
 local SkillTuning   = require(RSM.SkillTuning)
 local DamageNumbers = require(RSM.DamageNumbers)
@@ -22,6 +22,7 @@ local SSS   = game:GetService("ServerScriptService")
 local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
 local EnemyFactory = require(SMods.EnemyFactory)
 local CollectionService = game:GetService("CollectionService")
+local HeroBrain = require(SSS.RojoServer.Modules.HeroBrain)
 
 -- Optional if you need them directly here:
 -- local EnemyCommon  = require(RS.Enemy.EnemyCommon)
@@ -43,6 +44,12 @@ do
 		warn("[PlotService] Couldn't enforce Default<>Default collidable:", err)
 	end
 end
+-- one-time: make "Hero" group exist and collide with Default
+pcall(function() PhysicsService:RegisterCollisionGroup("Hero") end)
+pcall(function()
+	PhysicsService:CollisionGroupSetCollidable("Hero", "Default", true)
+	PhysicsService:CollisionGroupSetCollidable("Hero", "Hero",   false)
+end)
 
 local HeroTemplate  = ServerStorage:WaitForChild("HeroTemplate")
 local EnemyTemplate = ServerStorage:WaitForChild("EnemyTemplate")
@@ -186,7 +193,7 @@ local function setModelFrozen(model, on)
 		hum.PlatformStand = false
 		hum.AutoRotate    = true
 
-		hum.WalkSpeed = hum:GetAttribute("PreFreezeWS") or math.max(16, hum.WalkSpeed)
+		hum.WalkSpeed = hum:GetAttribute("PreFreezeWS") or 13
 		hum.JumpPower = hum:GetAttribute("PreFreezeJP") or hum.JumpPower
 		hum:SetAttribute("PreFreezeWS", nil)
 		hum:SetAttribute("PreFreezeJP", nil)
@@ -314,6 +321,8 @@ ensureRemote("OpenEquipMenu")
 ensureRemote("CastSkillRequest")
 ensureRemote("SkillPurchaseRequest")
 ensureRemote("SkillEquipRequest")
+ensureRemote("DamageNumbers")      -- <— for heal + shield ticks
+ensureRemote("SkillVFX")           -- if not already created
 local RE_WaveBanner = ensureRemote("WaveBanner")
 
 -- === State ===
@@ -477,10 +486,8 @@ local function ensureAttrs(plot)
 end
 
 local function ensureHeroBrain(hero)
-	if not hero:FindFirstChild("HeroBrain") then
-		local brain = HeroTemplate:FindFirstChild("HeroBrain")
-		if brain then brain:Clone().Parent = hero end
-	end
+	local ok, err = pcall(function() HeroBrain.attach(hero) end)
+	if not ok then warn("[PlotService] HeroBrain.attach failed:", err) end
 end
 
 local function getHero(plot)
@@ -498,6 +505,10 @@ end
 local function freezeHeroAtIdle(plot)
 	local hero = getHero(plot); if not hero then return end
 	setModelFrozen(hero, true)
+	hero:SetAttribute("BarsVisible", 0)       -- <— HIDE while idle
+	hero:SetAttribute("ShieldHP", 0)
+	hero:SetAttribute("ShieldMax", 0)
+	hero:SetAttribute("ShieldExpireAt", 0)
 	pinFrozenHeroToIdleGround(plot)
 	task.delay(0.05, function() if hero and hero.Parent then pinFrozenHeroToIdleGround(plot) end end)
 	task.delay(0.20, function() if hero and hero.Parent then pinFrozenHeroToIdleGround(plot) end end)
@@ -514,7 +525,7 @@ local function ensureHero(plot, ownerId)
 
 	local hum = clone:FindFirstChildOfClass("Humanoid")
 	if hum then
-		hum.WalkSpeed = math.max(hum.WalkSpeed, 16)
+		hum.WalkSpeed = 13
 		hum.AutoRotate = true
 		hum.Sit = false
 		hum.PlatformStand = false
@@ -845,7 +856,7 @@ local function spawnWave(plot, portal)
 	local ownerId = plot:GetAttribute("OwnerUserId") or 0
 	local elem    = plot:GetAttribute("LastElement") or "Neutral"
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
-	local W       = Waves.get(waveIdx)
+	local W = Waves.get(waveIdx)
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -875,12 +886,12 @@ local function spawnWave(plot, portal)
 	end
 
 	-- plan: [{kind="Basic", n=#}, {kind="Runner", n=#}, ...]
-	local plan
-	if Composer and type(Composer.build) == "function" then
-		plan = Composer.build({ wave = waveIdx, count = W.count })
-	else
-		plan = { list = { { kind = "Basic", n = W.count } } }
-	end
+	local plan = { list = { { kind = "Basic", n = W.count } } }
+if Waves and type(Waves.build) == "function" then
+	plan = Waves.build({ wave = waveIdx, count = W.count })
+else
+	plan = { list = { { kind = "Basic", n = W.count } } }
+end
 
 	local enemyFolder = ensureEnemyFolder(plot)
 	local spawnIndex  = 0
@@ -1010,14 +1021,20 @@ pinFrozenHeroToIdleGround = function(plot)
 	local anchor = findHeroAnchor(plot) or plot.PrimaryPart
 	if not (anchor and anchor:IsA("BasePart")) then return end
 
-	-- top of the anchor
+	-- top surface of the anchor
 	local topY = anchor.Position.Y + (anchor.Size.Y * 0.5)
 
-	-- move so HRP bottom sits exactly on that top surface
+	-- put FEET on that surface: topY + HipHeight + HRP half-height
+	local hum = hero:FindFirstChildOfClass("Humanoid")
 	local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
 	if not hrp then return end
-	local bottomY = hrp.Position.Y - (hrp.Size.Y * 0.5)
-	local deltaY  = (topY + 0.05) - bottomY
+
+	local hip = (hum and hum.HipHeight) or 2
+	if hip < 0.5 then hip = 2 end
+
+	local targetY = topY + hip + (hrp.Size.Y * 0.5)
+	local deltaY  = targetY - hrp.Position.Y
+
 	if math.abs(deltaY) > 1e-4 then
 		hero:PivotTo(hero:GetPivot() + Vector3.new(0, deltaY, 0))
 	end
@@ -1053,6 +1070,11 @@ local function runFightLoop(plot, portal, owner, opts)
 		end
 
 		if not preSpawned then
+			-- make sure the hero can move again for the new wave
+			setModelFrozen(hero, false)           -- <— critical (restores collisions / Animator)
+			hero:SetAttribute("BarsVisible", 1)   -- <— show HP bar again
+			setCombatLock(plot, false)            -- <— allow AI to act
+
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)
 			cleanupLeftovers_local()
 			spawnWave(plot, portal)
@@ -1080,13 +1102,24 @@ local function runFightLoop(plot, portal, owner, opts)
 
 		rewardAndAdvance(plot)
 		if plr then RE_WaveText:FireClient(plr, {kind="result", result="Victory", wave=startWave}) end
-
+		setCombatLock(plot, true)  -- <— block AI/casts during banner
+		
 		task.wait(BANNER_HOLD_SEC)
 
+		-- after victory, before teleporting back to idle
 		if hum and hum.Health > 0 then
 			local target = math.floor(hum.MaxHealth * HEAL_BETWEEN_WAVES + 0.5)
-			if hum.Health < target then hum.Health = target end
+			if hum.Health < target then
+				local delta = target - hum.Health
+				hum.Health = target
+				local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+				if hrp then
+					local DamageNumbers = require(ReplicatedStorage.Modules.DamageNumbers)
+					DamageNumbers.pop(hrp, "+"..delta, Color3.fromRGB(120,255,140))
+				end
+			end
 		end
+		setCombatLock(plot, true)  -- NEW: gate AI during between-wave idle
 		teleportHeroTo(plot, HERO_IDLE_ANCHOR)
 		freezeHeroAtIdle(plot)
 		task.defer(pinFrozenHeroToIdleGround, plot)
@@ -1123,7 +1156,14 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	setModelFrozen(ensureHero(plot, owner.UserId), false)
+	local h = ensureHero(plot, owner.UserId)
+	pcall(function() require(script.Parent.RojoServer.Modules.HeroBrain).attach(h) end)
+	h:SetAttribute("BarsVisible", 1)
+	setModelFrozen(h, false)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
+	local h = ensureHero(plot, owner.UserId)
+	if h then h:SetAttribute("BarsVisible", 1) end   -- NEW: show bars
+	setCombatLock(plot, false)                       -- NEW: unlock AI for the wave
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="wave", wave=waveIdx}) end
 	spawnWave(plot, portal)
 	setCombatLock(plot, false)

@@ -13,7 +13,7 @@ local RE_Equip = Remotes:WaitForChild("SkillEquipRequest")
 local RE_Buy   = Remotes:WaitForChild("SkillPurchaseRequest")
 
 -- ---------- skill data ----------
-local SkillConfig = require(RS:WaitForChild("SkillConfig"))
+local SkillConfig = require(RS.Modules.SkillConfig)
 
 local SKILLS = { "firebolt","aquabarrier","quakepulse" }
 
@@ -117,13 +117,10 @@ end
 local function readStats(id, lv)
 	lv = math.clamp(lv or 1, 1, MAX_LEVEL)
 
-	-- Require SkillConfig and ask it for stats at this level
-	local cfg = game:GetService("ReplicatedStorage"):FindFirstChild("SkillConfig")
-	cfg = cfg and require(cfg)
-
+	-- use the SkillConfig you already required at the top
 	local s = nil
-	if cfg and cfg[id] and type(cfg[id].stats) == "function" then
-		s = cfg[id].stats(lv)
+	if SkillConfig and SkillConfig[id] and type(SkillConfig[id].stats) == "function" then
+		s = SkillConfig[id].stats(lv)
 	end
 	s = s or {}
 
@@ -137,7 +134,7 @@ local function readStats(id, lv)
 	}
 	if s.shield ~= nil then out.shield = s.shield end
 
-	-- Fallbacks so the board never looks empty
+	-- Fallbacks so the board never looks empty (only used if SkillConfig gave nothing)
 	if id == "firebolt" then
 		out.damage   = out.damage   or (14 + 6*lv)
 		out.range    = out.range    or 38
@@ -153,7 +150,6 @@ local function readStats(id, lv)
 
 	return out
 end
-
 
 -- ---------- utility: plot + parts ----------
 local function myPlot()
@@ -221,7 +217,8 @@ local function play3D(id, pos, vol, minD, maxD)
 	s.EmitterSize = 10
 	s.Parent = p
 	s:Play()
-	s.Ended:Once(function() p:Destroy() end)
+	-- Use Connect (not :Once), then Debris cleans up the part anyway.
+	s.Ended:Connect(function() if p then p:Destroy() end end)
 	game:GetService("Debris"):AddItem(p, 8)
 end
 

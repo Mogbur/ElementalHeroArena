@@ -1,4 +1,4 @@
--- SkillService.server.lua
+-- ServerScriptService/SkillService.server.lua
 -- Buy/Upgrade + Equip with level-cap. Mirrors equips to Hero and keeps plot element.
 -- Accepts legacy ids (aquaburst/quake) and writes BOTH old & new attribute names.
 
@@ -30,27 +30,26 @@ local function norm(id : string)
 end
 
 -- Optional external SkillConfig (merged)
-local SkillConfig = RS:FindFirstChild("SkillConfig")
+local SkillConfig = require(RS.Modules.SkillConfig)
 local CFG = {
 	firebolt    = { baseCost = 25, costMul = 1.35 },
 	aquabarrier = { baseCost = 25, costMul = 1.35 },
 	quakepulse  = { baseCost = 25, costMul = 1.35 },
 }
-if SkillConfig then
-	local ok, mod = pcall(require, SkillConfig)
-	if ok and type(mod) == "table" then
-		for k, v in pairs(mod) do
-			local key = norm(k)
-			if key and type(v) == "table" then
-				local cur = CFG[key] or {}
-				CFG[key] = {
-					baseCost = tonumber(v.baseCost) or cur.baseCost or 25,
-					costMul  = tonumber(v.costMul)  or cur.costMul  or 1.35,
-				}
-			end
-		end
+
+-- If you decide to add baseCost/costMul inside SkillConfig entries,
+-- this loop will pick them up automatically.
+for k, v in pairs(SkillConfig or {}) do
+	local key = norm(k)
+	if key and type(v) == "table" then
+		local cur = CFG[key] or {}
+		CFG[key] = {
+			baseCost = tonumber(v.baseCost) or cur.baseCost or 25,
+			costMul  = tonumber(v.costMul)  or cur.costMul  or 1.35,
+		}
 	end
 end
+
 
 local ElemFromSkill = {
 	firebolt    = "Fire",
@@ -146,13 +145,8 @@ end)
 
 -- ===================== Player defaults =====================
 Players.PlayerAdded:Connect(function(plr : Player)
-	-- leaderstats money
-	local ls = plr:FindFirstChild("leaderstats")
-	if not ls then ls = Instance.new("Folder"); ls.Name="leaderstats"; ls.Parent=plr end
-	local money = ls:FindFirstChild("Money")
-	if not money then money = Instance.new("IntValue"); money.Name="Money"; money.Parent=ls end
-	if (money.Value or 0) < STARTING_MONEY then money.Value = STARTING_MONEY end
-
+	local CANON = { firebolt = true, aquabarrier = true, quakepulse = true }
+    local function lvlAttr(id) return "Skill_"..id end
 	-- default levels for both canonical and legacy keys
 	for id,_ in pairs(CANON) do
 		if plr:GetAttribute(lvlAttr(id)) == nil then plr:SetAttribute(lvlAttr(id), 0) end

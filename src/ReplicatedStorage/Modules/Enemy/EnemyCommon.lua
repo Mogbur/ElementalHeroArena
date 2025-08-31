@@ -1,5 +1,5 @@
--- ReplicatedStorage/Enemy/EnemyCommon.lua
-local PhysicsService    = game:GetService("PhysicsService")
+-- ReplicatedStorage/Modules/Enemy/EnemyCommon.lua
+local PhysicsService = game:GetService("PhysicsService")
 local CollectionService = game:GetService("CollectionService")
 
 local M = {}
@@ -10,70 +10,56 @@ local function setDefaultCollidable()
 	end)
 end
 
--- Make HRP the only collider, weld Body to HRP, normalize humanoid, etc.
 function M.sanitize(model : Model, opts)
 	if not model then return end
 	opts = opts or {}
 
-	local hum  = model:FindFirstChildOfClass("Humanoid"); if not hum then return end
-	local hrp  = model:FindFirstChild("HumanoidRootPart") or hum.RootPart; if not hrp then return end
+	local hum = model:FindFirstChildOfClass("Humanoid"); if not hum then return end
+	local hrp = model:FindFirstChild("HumanoidRootPart") or hum.RootPart; if not hrp then return end
 	local body = model:FindFirstChild("Body")
-
 	if model.PrimaryPart ~= hrp then model.PrimaryPart = hrp end
 
-	-- Reset parts
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.Anchored = false
-			d.AssemblyLinearVelocity  = Vector3.zero
+			d.AssemblyLinearVelocity = Vector3.zero
 			d.AssemblyAngularVelocity = Vector3.zero
 			d.CollisionGroup = "Default"
 		end
 	end
 	setDefaultCollidable()
 
-	-- Root is the (only) collider
 	hrp.CanCollide = true
-	hrp.Massless   = false
+	hrp.Massless = false
 
-	-- Visible Body: no-collide, massless, SNAP to HRP, then weld
 	if body then
 		body.CanCollide = false
-		body.Massless   = true
-
-		-- kill any old welds on Body
+		body.Massless = true
 		for _,w in ipairs(body:GetChildren()) do
 			if w:IsA("WeldConstraint") then w:Destroy() end
 		end
-
-		-- Align bottoms so Body sits exactly where the HRP sits.
-		-- (move Body DOWN if it's shorter than HRP, UP if it's taller)
 		local dy = (hrp.Size.Y - body.Size.Y) * 0.5
 		body.CFrame = hrp.CFrame * CFrame.new(0, -dy, 0)
-		body.AssemblyLinearVelocity  = Vector3.zero
+		body.AssemblyLinearVelocity = Vector3.zero
 		body.AssemblyAngularVelocity = Vector3.zero
-
 		local weld = Instance.new("WeldConstraint")
 		weld.Part0, weld.Part1 = hrp, body
 		weld.Parent = body
 	end
 
-	-- HipHeight: keep tiny because we flush the rig to ground manually
 	local hh = opts.hipHeightOverride
 	if typeof(hh) == "number" then
 		hum.HipHeight = hh
 	else
-		hum.HipHeight = 0    -- <<< keep them on the floor, no hover
+		hum.HipHeight = 0
 	end
 
-	-- Walk basics
-	hum.AutoRotate    = true
+	hum.AutoRotate = true
 	hum.PlatformStand = false
-	hum.WalkSpeed     = math.max(10, hum.WalkSpeed)
+	hum.WalkSpeed = math.max(10, hum.WalkSpeed)
 	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
 end
 
--- Flush model so HRP bottom sits on groundY (+epsilon)
 function M.flushToGroundByRoot(model : Model, groundY : number, epsilon)
 	if not (model and groundY) then return end
 	local root = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
@@ -101,10 +87,14 @@ function M.colorByElement(model : Model, elem : string?)
 	if not elem then return end
 	local body = model:FindFirstChild("Body")
 	if not (body and body:IsA("BasePart")) then return end
-	if     elem == "Fire"  then body.Color = Color3.fromRGB(255,120, 60)
-	elseif elem == "Water" then body.Color = Color3.fromRGB( 80,140,255)
-	elseif elem == "Earth" then body.Color = Color3.fromRGB(170,130, 90)
-	else                        body.Color = Color3.fromRGB(180, 40,  40)
+	if elem == "Fire" then
+		body.Color = Color3.fromRGB(255,120,60)
+	elseif elem == "Water" then
+		body.Color = Color3.fromRGB(80,140,255)
+	elseif elem == "Earth" then
+		body.Color = Color3.fromRGB(170,130,90)
+	else
+		body.Color = Color3.fromRGB(180,40,40)
 	end
 end
 

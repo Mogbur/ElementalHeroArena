@@ -1,18 +1,16 @@
--- ReplicatedStorage/Enemy/Brains/Melee.lua
+-- ReplicatedStorage/Modules/Enemy/Brains/Melee.lua
 local Melee = {}
+local TICK = 0.15
 
-local TICK       = 0.15
 local DEFAULTS = {
-	WalkSpeed   = 12,
+	WalkSpeed = 12,
 	AttackRange = 6.0,
-	Cooldown    = 0.8,
-	StopPad     = 4.0, -- aim to arrive just short of the hero
+	Cooldown = 0.8,
+	StopPad = 4.0,
 }
 
 local function isMyHero(m, ownerId)
-	return m
-		and m:IsA("Model")
-		and m:GetAttribute("IsHero")
+	return m and m:IsA("Model") and m:GetAttribute("IsHero")
 		and (m:GetAttribute("OwnerUserId") or 0) == (ownerId or 0)
 end
 
@@ -30,20 +28,21 @@ end
 
 local function stopPoint(fromPos, heroPos, stopDist)
 	local dir = (heroPos - fromPos)
-	local d   = dir.Magnitude
+	local d = dir.Magnitude
 	if d < 1e-3 then return heroPos end
 	return heroPos - dir.Unit * stopDist
 end
 
 function Melee.start(model, cfg)
 	cfg = cfg or {}
-	for k,v in pairs(DEFAULTS) do if cfg[k] == nil then cfg[k] = v end end
+	for k,v in pairs(DEFAULTS) do
+		if cfg[k] == nil then cfg[k] = v end
+	end
 
-	local hum  = model:FindFirstChildOfClass("Humanoid")
+	local hum = model:FindFirstChildOfClass("Humanoid")
 	local root = model:FindFirstChild("HumanoidRootPart")
 	if not (hum and root) then return function() end end
 
-	-- bring the rig to life
 	hum.AutoRotate = true
 	hum.PlatformStand = false
 	hum.UseJumpPower = false
@@ -51,17 +50,16 @@ function Melee.start(model, cfg)
 	hum.WalkSpeed = math.max(hum.WalkSpeed, cfg.WalkSpeed)
 
 	local BASE_DMG = model:GetAttribute("BaseDamage") or 10
-	local OWNER    = model:GetAttribute("OwnerUserId") or 0
-	local lastAtk  = 0
-	local running  = true
+	local OWNER = model:GetAttribute("OwnerUserId") or 0
+	local lastAtk = 0
+	local running = true
 
 	task.spawn(function()
 		while running and model.Parent and hum.Health > 0 do
 			local hero, hh, hr = findHero(OWNER)
 			if hero then
 				local toHero = (hr.Position - root.Position)
-				local dist   = toHero.Magnitude
-
+				local dist = toHero.Magnitude
 				if dist > cfg.AttackRange then
 					hum:MoveTo(stopPoint(root.Position, hr.Position, math.max(cfg.AttackRange - 1.0, 2.0)))
 				else

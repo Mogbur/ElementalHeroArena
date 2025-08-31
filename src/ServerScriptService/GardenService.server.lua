@@ -1,12 +1,15 @@
 -- Planter crops -> cash + essence + hero XP
-local RS  = game:GetService("ReplicatedStorage")
-local SSS = game:GetService("ServerScriptService")
+local RS   = game:GetService("ReplicatedStorage")
+local SSS  = game:GetService("ServerScriptService")
+local Players = game:GetService("Players") -- ✅ FIX 1: was missing
 
 local Shared  = RS:WaitForChild("Modules")
 local Rojo    = SSS:WaitForChild("RojoServer")
 local SrvMods = Rojo:WaitForChild("Modules")
+local PLOTS   = workspace:WaitForChild("Plots")
 
-local SeedConfig  = require(Shared:WaitForChild("SeedConfig"))
+-- ✅ FIX 2: require into the name used below ("Seeds")
+local Seeds       = require(Shared:WaitForChild("SeedConfig"))
 local Progression = require(SrvMods:WaitForChild("Progression"))
 
 local DEFAULT_SEED_ID = "Blueberry"
@@ -28,7 +31,8 @@ local function ensurePlotState(plot)
 		local folder = plot:FindFirstChild("Plants") or Instance.new("Folder")
 		folder.Name = "Plants"; folder.Parent = plot
 		PlotState[plot] = { capacity = plot:GetAttribute("GardenCapacity") or 6, plants = {}, visualFolder = folder }
-	end; return PlotState[plot]
+	end
+	return PlotState[plot]
 end
 local function destroyPrompt(plot) local p=plot:FindFirstChild("GardenPromptPart"); if p then p:Destroy() end end
 local function randomPointNear(anchor)
@@ -158,8 +162,11 @@ end
 local function clearPlot(plot)
 	destroyPrompt(plot)
 	local st=PlotState[plot]
-	if st then for _,pl in ipairs(st.plants) do if pl.model then pl.model:Destroy() end end
-		if st.visualFolder then st.visualFolder:ClearAllChildren() end; PlotState[plot]=nil end
+	if st then
+		for _,pl in ipairs(st.plants) do if pl.model then pl.model:Destroy() end end
+		if st.visualFolder then st.visualFolder:ClearAllChildren() end
+		PlotState[plot]=nil
+	end
 end
 
 local function hookPlot(plot)
@@ -174,5 +181,8 @@ for _, m in ipairs(PLOTS:GetChildren()) do if isPlot(m) then hookPlot(m) end end
 PLOTS.ChildAdded:Connect(function(m) if isPlot(m) then hookPlot(m) end end)
 
 task.spawn(function()
-	while true do for plot,_ in pairs(PlotState) do updateRipeness(plot) end task.wait(1) end
+	while true do
+		for plot,_ in pairs(PlotState) do updateRipeness(plot) end
+		task.wait(1)
+	end
 end)

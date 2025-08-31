@@ -1,26 +1,34 @@
 -- ServerScriptService/ProgressionService.server.lua
 -- Creates the Remotes used by the equip menu + initializes player progression.
+local Players              = game:GetService("Players")
+local ReplicatedStorage    = game:GetService("ReplicatedStorage")
+local ServerScriptService  = game:GetService("ServerScriptService")
 
-local Players = game:GetService("Players")
-local RS      = game:GetService("ReplicatedStorage")
-
--- === Ensure Remotes exist (safe to run multiple times) ===
-local rem = RS:FindFirstChild("Remotes")
-if not rem then
-	rem = Instance.new("Folder")
-	rem.Name = "Remotes"
-	rem.Parent = RS
+-- put remotes in RS/Remotes (create if missing)
+local function getRemotesFolder()
+    local f = ReplicatedStorage:FindFirstChild("Remotes")
+    if not f then
+        f = Instance.new("Folder")
+        f.Name = "Remotes"
+        f.Parent = ReplicatedStorage
+    end
+    return f
 end
 
 local function ensureEvent(name)
-	local e = rem:FindFirstChild(name)
-	if not e then
-		e = Instance.new("RemoteEvent")
-		e.Name = name
-		e.Parent = rem
-	end
-	return e
+    local rem = getRemotesFolder()
+    local e = rem:FindFirstChild(name)
+    if not e then
+        e = Instance.new("RemoteEvent")
+        e.Name = name
+        e.Parent = rem
+    end
+    return e
 end
+
+-- your module (server-only)
+local Progression = require(ServerScriptService.RojoServer.Modules.Progression)
+
 
 ensureEvent("OpenEquipMenu")
 ensureEvent("SkillPurchaseRequest")
