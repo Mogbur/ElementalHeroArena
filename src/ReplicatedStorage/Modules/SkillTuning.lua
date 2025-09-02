@@ -10,7 +10,7 @@ local Skills = {
 		dotRadius = 10,
 		duration = 6,
 		cd = 10,
-		shield = {50,65,80,95,110},
+		shield = {65,85,100,135,165},
 		hotTotalLv5 = 50,
 		hotTicks = 5,
 	},

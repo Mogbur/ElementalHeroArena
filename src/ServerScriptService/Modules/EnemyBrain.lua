@@ -1,5 +1,7 @@
 -- ServerScriptService/RojoServer/Modules/EnemyBrain.lua
 local CollectionService = game:GetService("CollectionService")
+local RS = game:GetService("ReplicatedStorage")
+local Combat = require(RS:WaitForChild("Modules"):WaitForChild("Combat"))
 
 local Brain = {}
 local ACTIVE = setmetatable({}, { __mode = "k" })
@@ -25,16 +27,15 @@ function Brain.attach(enemy: Model, ctx)
 
 	if not CollectionService:HasTag(enemy,"Enemy") then CollectionService:AddTag(enemy,"Enemy") end
 
-	local OWNER = enemy:GetAttribute("OwnerUserId") or 0
+	local OWNER    = enemy:GetAttribute("OwnerUserId") or 0
 	local BASE_DMG = enemy:GetAttribute("BaseDamage") or 10
-	local ATK_RANGE = 6.0
-	local TICK = 0.15
+	local ATK_RANGE= 6.0
+	local TICK     = 0.15
 	local COOLDOWN = 0.8
-	local lastAtk = 0
+	local lastAtk  = 0
 
 	local function isMyHero(m)
-		return m:IsA("Model") and m:GetAttribute("IsHero")
-			and (m:GetAttribute("OwnerUserId") or 0) == OWNER
+		return m:IsA("Model") and m:GetAttribute("IsHero") and (m:GetAttribute("OwnerUserId") or 0) == OWNER
 	end
 	local function findHero()
 		for _,m in ipairs(workspace:GetDescendants()) do
@@ -45,6 +46,7 @@ function Brain.attach(enemy: Model, ctx)
 			end
 		end
 	end
+
 	local function stopPoint(fromPos, heroPos)
 		local dir = (heroPos - fromPos); local d = dir.Magnitude
 		if d < 1e-3 then return heroPos end
@@ -74,7 +76,7 @@ function Brain.attach(enemy: Model, ctx)
 				local now = os.clock()
 				if (now - lastAtk) >= COOLDOWN then
 					lastAtk = now
-					hh:TakeDamage(BASE_DMG)
+					Combat.ApplyDamage(nil, hero, BASE_DMG, enemy:GetAttribute("Element"))
 				end
 			end
 		end

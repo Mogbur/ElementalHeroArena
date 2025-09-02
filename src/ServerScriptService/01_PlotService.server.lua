@@ -17,6 +17,7 @@ local Waves = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Wa
 local SkillConfig   = require(RSM.SkillConfig)
 local SkillTuning   = require(RSM.SkillTuning)
 local DamageNumbers = require(RSM.DamageNumbers)
+local Forge = require(script.Parent.Modules.ForgeService)
 
 local SSS   = game:GetService("ServerScriptService")
 local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
@@ -358,105 +359,6 @@ local function getBannerAnchorPart(plot)
 	return nil
 end
 
-local function showWorldBanner(plot, text, bgColor, sec, kind)
-	if not SHOW_WORLD_BANNER then return end
-	local anchor = getBannerAnchorPart(plot)
-	if not anchor then return end
-	local palette = {
-		wave    = {from = Color3.fromRGB( 70,130,220), to = Color3.fromRGB( 40, 90,200)},
-		victory = {from = Color3.fromRGB( 90,210,140), to = Color3.fromRGB( 55,165,110)},
-		defeat  = {from = Color3.fromRGB(230,110,100), to = Color3.fromRGB(185, 70, 70)},
-	}
-	local colors = palette[kind or "wave"]
-
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "WaveBannerBillboard"
-	gui.Adornee = anchor
-	gui.AlwaysOnTop = true
-	gui.Size = UDim2.fromOffset(760, 160)
-	gui.ExtentsOffsetWorldSpace = Vector3.new(0, 35, 0)
-	gui.Parent = plot
-
-	local shadow = Instance.new("Frame")
-	shadow.BackgroundColor3 = Color3.fromRGB(0,0,0)
-	shadow.BackgroundTransparency = 0.75
-	shadow.Size = UDim2.fromScale(1, 1)
-	shadow.Position = UDim2.fromOffset(0, 6)
-	shadow.BorderSizePixel = 0
-	shadow.ZIndex = 0
-	shadow.Parent = gui
-	Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 26)
-
-	local frame = Instance.new("Frame")
-	frame.BackgroundColor3 = (bgColor or (colors and colors.to)) or Color3.fromRGB(60,110,200)
-	frame.BackgroundTransparency = 0.0
-	frame.Size = UDim2.fromScale(1, 1)
-	frame.Position = UDim2.fromOffset(0, 0)
-	frame.BorderSizePixel = 0
-	frame.ZIndex = 1
-	frame.Parent = gui
-	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 26)
-
-	local grad = Instance.new("UIGradient")
-	if not bgColor and colors then
-		grad.Color = ColorSequence.new(colors.from, colors.to)
-	else
-		grad.Color = ColorSequence.new(frame.BackgroundColor3, frame.BackgroundColor3)
-	end
-	grad.Rotation = 30
-	grad.Parent = frame
-
-	local innerStroke = Instance.new("UIStroke")
-	innerStroke.Thickness = 2
-	innerStroke.Transparency = 0.45
-	innerStroke.Color = Color3.fromRGB(255,255,255)
-	innerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	innerStroke.Parent = frame
-
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Size = UDim2.fromScale(1, 1)
-	label.Text = text
-	label.TextScaled = true
-	label.Font = Enum.Font.GothamBlack
-	label.TextColor3 = Color3.fromRGB(255,255,255)
-	label.TextStrokeTransparency = 0.15
-	label.TextStrokeColor3 = Color3.fromRGB(0,0,0)
-	label.ZIndex = 2
-	label.Parent = frame
-
-	local poof = Instance.new("Frame")
-	poof.AnchorPoint = Vector2.new(0.5, 0.5)
-	poof.Position = UDim2.fromScale(0.5, 0.5)
-	poof.Size = UDim2.fromScale(0.1, 0.1)
-	poof.BackgroundColor3 = Color3.fromRGB(255,255,255)
-	poof.BackgroundTransparency = 0.3
-	poof.BorderSizePixel = 0
-	poof.ZIndex = 0
-	poof.Parent = frame
-	Instance.new("UICorner", poof).CornerRadius = UDim.new(1, 0)
-
-	local uiScale = Instance.new("UIScale", frame); uiScale.Scale = 0.9
-	local pop = TweenService:Create(uiScale, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
-	pop:Play()
-
-	local poofGrow = TweenService:Create(poof, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.fromScale(1.25, 1.25), BackgroundTransparency = 1})
-	poofGrow:Play()
-	task.delay(0.28, function() if poof then poof:Destroy() end end)
-
-	local up   = TweenService:Create(gui, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {ExtentsOffsetWorldSpace = Vector3.new(0, 18.6, 0)})
-	local down = TweenService:Create(gui, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),  {ExtentsOffsetWorldSpace = Vector3.new(0, 17.0, 0)})
-
-	local t0 = time()
-	task.spawn(function()
-		while gui.Parent and (time() - t0) < (sec or 5) do
-			up:Play();   up.Completed:Wait()
-			down:Play(); down.Completed:Wait()
-		end
-		if gui then gui:Destroy() end
-	end)
-end
-
 local function isPlot(m)
 	if not m:IsA("Model") then return false end
 	if m.Name:match(PLOT_NAME_PATTERN) then return true end
@@ -515,40 +417,53 @@ local function freezeHeroAtIdle(plot)
 end
 
 local function ensureHero(plot, ownerId)
-	local existing = getHero(plot)
-	if existing then ensureHeroBrain(existing); return existing end
-	local clone = HeroTemplate:Clone()
-	clone.Name = "Hero"
-	clone:SetAttribute("IsHero", true)
-	if ownerId then clone:SetAttribute("OwnerUserId", ownerId) end
-	clone.Parent = plot
+    local existing = getHero(plot)
+    if existing then
+        -- make sure baseline applies even if the hero already exists
+        local hum = existing:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.MaxHealth = math.max(hum.MaxHealth, 160) -- tweak to taste (try 180 if still too hard)
+            if hum.Health > hum.MaxHealth then hum.Health = hum.MaxHealth end
+        end
+        ensureHeroBrain(existing)
+        return existing
+    end
 
-	local hum = clone:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum.WalkSpeed = 13
-		hum.AutoRotate = true
-		hum.Sit = false
-		hum.PlatformStand = false
-		hum.BreakJointsOnDeath = false
-	end
-	for _, bp in ipairs(clone:GetDescendants()) do
-		if bp:IsA("BasePart") then
-			bp.Anchored = false
-			bp.AssemblyLinearVelocity  = Vector3.zero
-			bp.AssemblyAngularVelocity = Vector3.zero
-			-- put new heroes in the proper group so they match your CollisionGroups script
-			pcall(function() PhysicsService:SetPartCollisionGroup(bp, "Hero") end)
-		end
-	end
+    local clone = HeroTemplate:Clone()
+    clone.Name = "Hero"
+    clone:SetAttribute("IsHero", true)
+    if ownerId then clone:SetAttribute("OwnerUserId", ownerId) end
+    clone.Parent = plot
 
-	ensureHeroBrain(clone)
-	task.defer(function()
-		local hrp = clone:FindFirstChild("HumanoidRootPart")
-		if hrp then pcall(function() hrp:SetNetworkOwner(nil) end) end
-	end)
-	local idle = findHeroAnchor(plot) or getAnchor(plot, SPAWN_ANCHOR) or plot.PrimaryPart
-	if idle then clone:PivotTo(idle.CFrame) end
-	return clone
+    local hum = clone:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = 13
+        hum.AutoRotate = true
+        hum.Sit = false
+        hum.PlatformStand = false
+        hum.BreakJointsOnDeath = false
+
+        -- BASELINE SURVIVABILITY
+        hum.MaxHealth = math.max(hum.MaxHealth, 160) -- <- set your baseline here
+        hum.Health    = hum.MaxHealth
+    end
+    for _, bp in ipairs(clone:GetDescendants()) do
+        if bp:IsA("BasePart") then
+            bp.Anchored = false
+            bp.AssemblyLinearVelocity  = Vector3.zero
+            bp.AssemblyAngularVelocity = Vector3.zero
+            pcall(function() PhysicsService:SetPartCollisionGroup(bp, "Hero") end)
+        end
+    end
+
+    ensureHeroBrain(clone)
+    task.defer(function()
+        local hrp = clone:FindFirstChild("HumanoidRootPart")
+        if hrp then pcall(function() hrp:SetNetworkOwner(nil) end) end
+    end)
+    local idle = findHeroAnchor(plot) or getAnchor(plot, SPAWN_ANCHOR) or plot.PrimaryPart
+    if idle then clone:PivotTo(idle.CFrame) end
+    return clone
 end
 
 -- Return the Y of the top face of a BasePart (nil if not a BasePart)
@@ -857,6 +772,14 @@ local function spawnWave(plot, portal)
 	local elem    = plot:GetAttribute("LastElement") or "Neutral"
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
 	local W = Waves.get(waveIdx)
+	-- Early-wave balance scalars (lighter at W1–W5, neutral afterward)
+	local function earlyWaveScalars(w)
+		if w == 1 then return 0.60, 0.55 end  -- hpMul, dmgMul
+		if w == 2 then return 0.75, 0.65 end
+		if w <= 5 then return 0.90, 0.80 end
+		return 1.0, 1.0
+	end
+	local hpMul, dmgMul = earlyWaveScalars(waveIdx)
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -935,10 +858,12 @@ end
 
 				local hum = enemy:FindFirstChildOfClass("Humanoid")
 				if hum then
-					-- keep as-is; factory already scaled
-					hum.MaxHealth = math.max(1, hum.MaxHealth)
+					-- multiply post-factory stats for the first segment only
+					hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
 					hum.Health    = hum.MaxHealth
-					enemy:SetAttribute("BaseDamage", math.max(1, enemy:GetAttribute("BaseDamage") or 10))
+
+					local baseDmg = enemy:GetAttribute("BaseDamage") or 10
+					enemy:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
 				end
 
 				if not CollectionService:HasTag(enemy, "Enemy") then
@@ -1068,7 +993,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			local waveIdx = plot:GetAttribute("CurrentWave") or 1
 			RE_WaveText:FireClient(plr, {kind="wave", wave=waveIdx})
 		end
-
+		
 		if not preSpawned then
 			-- make sure the hero can move again for the new wave
 			setModelFrozen(hero, false)           -- <— critical (restores collisions / Animator)
@@ -1081,6 +1006,7 @@ local function runFightLoop(plot, portal, owner, opts)
 		else
 			preSpawned = false
 		end
+		local waveStartTime = time() -- NEW: for TTK
 
 		local startWave = plot:GetAttribute("CurrentWave") or 1
 		local t0 = time()
@@ -1088,6 +1014,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			if hum and hum.Health <= 0 then
 				if plr then RE_WaveText:FireClient(plr, {kind="result", result="Defeat", wave=startWave}) end
 				task.wait(BANNER_HOLD_SEC)
+				print(("[Balance] Defeat on Wave %d after %.1fs"):format(startWave, time() - t0))
 				local cpStart = ((startWave - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
@@ -1103,7 +1030,15 @@ local function runFightLoop(plot, portal, owner, opts)
 		rewardAndAdvance(plot)
 		if plr then RE_WaveText:FireClient(plr, {kind="result", result="Victory", wave=startWave}) end
 		setCombatLock(plot, true)  -- <— block AI/casts during banner
-		
+		-- simple TTK log to Output
+		local ttl = time() - t0 -- you already set t0 a bit above; use waveStartTime if you prefer exact
+		if hum then
+			print(("[Balance] Wave %d cleared in %.1fs | Hero %d/%d")
+				:format(startWave, ttl, math.floor(hum.Health), math.floor(hum.MaxHealth)))
+		else
+			print(("[Balance] Wave %d cleared in %.1fs"):format(startWave, ttl))
+		end
+
 		task.wait(BANNER_HOLD_SEC)
 
 		-- after victory, before teleporting back to idle
@@ -1125,6 +1060,14 @@ local function runFightLoop(plot, portal, owner, opts)
 		task.defer(pinFrozenHeroToIdleGround, plot)
 		cleanupLeftovers_local()
 
+		-- >>> NEW: spawn the Forge shrine if the *next* wave begins a 5-wave segment
+		local nextWave = plot:GetAttribute("CurrentWave") or 1
+		if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
+			Forge:SpawnShrine(plot)      -- appears with portal-vfx
+		else
+			Forge:DespawnShrine(plot)    -- safety: ensure no leftover shrine
+		end
+
 		if not autoChain then break end
 		task.wait(BETWEEN_WAVES_DELAY)
 	end
@@ -1140,6 +1083,9 @@ local function startWaveCountdown(plot, portal, owner)
 
 	-- lock meta-state (brains may read this), but we do NOT freeze anything anymore
 	setCombatLock(plot, true)
+
+	-- >>> NEW: start vanishing the Forge shrine as soon as the countdown begins
+	pcall(function() Forge:DespawnShrine(plot) end)
 
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
 
