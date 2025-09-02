@@ -9,21 +9,30 @@ local ServerStorage     = game:GetService("ServerStorage")
 local TweenService      = game:GetService("TweenService")
 local Debris            = game:GetService("Debris")
 local PhysicsService    = game:GetService("PhysicsService")
-
-local RSM        = ReplicatedStorage:WaitForChild("Modules")
-local EnemyCommon   = require(RSM.Enemy.EnemyCommon)
-local EnemyCatalog  = require(RSM.Enemy.EnemyCatalog)
-local Waves = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Waves"):WaitForChild("Waves"))
-local SkillConfig   = require(RSM.SkillConfig)
-local SkillTuning   = require(RSM.SkillTuning)
-local DamageNumbers = require(RSM.DamageNumbers)
-local Forge = require(script.Parent.Modules.ForgeService)
-
-local SSS   = game:GetService("ServerScriptService")
-local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
-local EnemyFactory = require(SMods.EnemyFactory)
 local CollectionService = game:GetService("CollectionService")
-local HeroBrain = require(SSS.RojoServer.Modules.HeroBrain)
+
+-- Shared (client/server) modules live in ReplicatedStorage/Modules
+local RSM = ReplicatedStorage:WaitForChild("Modules")
+local EnemyCommon   = require(RSM:WaitForChild("Enemy"):WaitForChild("EnemyCommon"))
+local EnemyCatalog  = require(RSM:WaitForChild("Enemy"):WaitForChild("EnemyCatalog"))
+local Waves         = require(RSM:WaitForChild("Waves"):WaitForChild("Waves"))
+local SkillConfig   = require(RSM:WaitForChild("SkillConfig"))
+local SkillTuning   = require(RSM:WaitForChild("SkillTuning"))
+local DamageNumbers = require(RSM:WaitForChild("DamageNumbers"))
+
+-- Server-only modules: prefer ServerScriptService/RojoServer/Modules, else ServerScriptService/Modules
+local SSS = game:GetService("ServerScriptService")
+local SMods = (function()
+    local rs = SSS:FindFirstChild("RojoServer")
+    if rs and rs:FindFirstChild("Modules") then
+        return rs.Modules
+    end
+    return SSS:WaitForChild("Modules")
+end)()
+
+local EnemyFactory = require(SMods:WaitForChild("EnemyFactory"))
+local HeroBrain    = require(SMods:WaitForChild("HeroBrain"))
+local Forge        = require(SMods:WaitForChild("ForgeService"))
 
 -- Optional if you need them directly here:
 -- local EnemyCommon  = require(RS.Enemy.EnemyCommon)
@@ -324,7 +333,6 @@ ensureRemote("SkillPurchaseRequest")
 ensureRemote("SkillEquipRequest")
 ensureRemote("DamageNumbers")      -- <— for heal + shield ticks
 ensureRemote("SkillVFX")           -- if not already created
-local RE_WaveBanner = ensureRemote("WaveBanner")
 
 -- === State ===
 local playerToPlot  = {} -- [Player] = Model

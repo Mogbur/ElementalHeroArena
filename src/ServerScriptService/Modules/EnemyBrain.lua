@@ -1,7 +1,9 @@
 -- ServerScriptService/RojoServer/Modules/EnemyBrain.lua
 local CollectionService = game:GetService("CollectionService")
-local RS = game:GetService("ReplicatedStorage")
-local Combat = require(RS:WaitForChild("Modules"):WaitForChild("Combat"))
+local SSS   = game:GetService("ServerScriptService")
+local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
+
+local Combat = require(SMods:WaitForChild("Combat"))
 
 local Brain = {}
 local ACTIVE = setmetatable({}, { __mode = "k" })
