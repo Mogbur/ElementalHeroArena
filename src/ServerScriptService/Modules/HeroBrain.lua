@@ -315,6 +315,12 @@ function Brain.attach(hero: Model)
 	local skillCDEnds = { firebolt=0, quakepulse=0, aquabarrier=0 }
 	local gcdEnds = 0
 
+	-- NEW: wave-start reset so first casts are instant each wave
+	local function resetAllCooldowns()
+		gcdEnds = 0
+		for k,_ in pairs(skillCDEnds) do skillCDEnds[k] = 0 end
+	end
+
 	local function canUseSkill(id: string): boolean
 		id = canon(id); if not id then return false end
 		if getSkillLevel(id) <= 0 then return false end
@@ -543,6 +549,13 @@ function Brain.attach(hero: Model)
 	local conns = {}
 	table.insert(conns, hero.Destroying:Connect(function() Brain.detach(hero) end))
 
+	-- NEW: also reset CDs when wave HUD turns on for the hero
+	table.insert(conns, hero:GetAttributeChangedSignal("BarsVisible"):Connect(function()
+		if hero:GetAttribute("BarsVisible") == 1 then
+			resetAllCooldowns()
+		end
+	end))
+
 	local running = true
 	ACTIVE[hero] = { conns = conns, hum = hum, hrp = hrp, running = running }
 
@@ -578,24 +591,23 @@ function Brain.attach(hero: Model)
 			end
 
 			local target = pickTarget()
-			local equipped = getEquippedSkill()
 
-			-- emergency water (require nearby enemies)
-			if equipped == "aquabarrier" and canUseSkill("aquabarrier") then
+			-- === Auto skills (no "equipped" gating) ===
+
+			-- AquaBarrier: HP < 65% and at least 1 enemy nearby
+			if canUseSkill("aquabarrier") and getSkillLevel("aquabarrier") > 0 then
 				local hpFrac = hum.Health / math.max(1, hum.MaxHealth)
-				local needHP = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.75
-				if hpFrac <= needHP then
-					if enemiesNear(hrp.Position, 12) >= 2 then
-						cast_aquabarrier(getSkillLevel("aquabarrier"))
-						startCooldowns("aquabarrier")
-						continue
-					end
+				local needHP = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.65
+				if hpFrac <= needHP and enemiesNear(hrp.Position, 12) >= 1 then
+					cast_aquabarrier(getSkillLevel("aquabarrier"))
+					startCooldowns("aquabarrier")
+					continue
 				end
 			end
 
 			if target then
-				-- quake
-				if equipped == "quakepulse" and canUseSkill("quakepulse") then
+				-- QuakePulse: 2+ enemies in cone/radius
+				if canUseSkill("quakepulse") and getSkillLevel("quakepulse") > 0 then
 					local hits = getEnemiesInCone(hrp.Position, hrp.CFrame.LookVector, QUAKE_RANGE, QUAKE_ANGLE)
 					if #hits >= (T.Client and T.Client.QUAKE_MIN_ENEMIES or 2) then
 						cast_quake(target, getSkillLevel("quakepulse"))
@@ -604,8 +616,8 @@ function Brain.attach(hero: Model)
 					end
 				end
 
-				-- firebolt
-				if equipped == "firebolt" and canUseSkill("firebolt") then
+				-- Firebolt: target within range
+				if canUseSkill("firebolt") and getSkillLevel("firebolt") > 0 then
 					local p = targetPos(target)
 					if p and (p - hrp.Position).Magnitude <= FIRE_RANGE then
 						cast_firebolt(target, getSkillLevel("firebolt"))

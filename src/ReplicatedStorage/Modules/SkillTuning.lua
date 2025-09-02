@@ -2,7 +2,7 @@
 local MAX = 5
 
 local Skills = {
-	firebolt = { hit = {30,40,50,60,75}, range = 46, cd = 6, dotPctLv5 = 0.45 },
+	firebolt = { hit = {30,40,50,60,75}, range = 90, cd = 6, dotPctLv5 = 0.45 },
 	quakepulse = { hit = {45,60,75,90,105}, radius = 10, cd = 10, aftershockPct = 0.50, fracturePct = 0.15, fractureDur = 4.0 },
 	aquabarrier = {
 		dotTotal = {22,30,38,48,60},
