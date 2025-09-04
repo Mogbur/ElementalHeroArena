@@ -1,24 +1,60 @@
-local thresholds = {0, 100, 300, 700, 1500, 3000} -- XP for ranks 0..5
+local thresholds = {0, 100, 300, 700, 1500, 3000} -- Lvl1..Lvl5 gates are indices 1..5; last is cap
 local M = {}
 
-function M.rank(xp)
-  for i = #thresholds, 1, -1 do
-    if xp >= thresholds[i] then return i end
-  end
-  return 0
+function M.thresholds() return thresholds end
+function M.max() return thresholds[#thresholds] end
+
+-- Returns display level 1..5 (Lvl.1 at 0 XP)
+function M.level(xp: number): number
+	xp = tonumber(xp) or 0
+	local lvl = 1
+	for i = 2, #thresholds do
+		if xp >= thresholds[i] then
+			lvl = i
+		else
+			break
+		end
+	end
+	if lvl > 5 then lvl = 5 end
+	return lvl
 end
 
-function M.bonuses(styleId, xp)
-  local r = M.rank(xp)
-  if styleId == "SwordShield" then
-    return { drFlat = 0.01 * r } -- +1% damage reduction per rank (0..5%)
-  elseif styleId == "Bow" then
-    return { critDmgMul = 1.0 + 0.015 * r } -- +1.5% basic-crit damage per rank
-  elseif styleId == "Mace" then
-    local chance = ({0.01,0.03,0.05,0.07,0.10})[math.clamp(r,1,5)] or 0
-    return { stunChance = chance }
-  end
-  return {}
+-- Bounds for the current level (low = current gate, high = next gate)
+function M.bounds(xp: number): (number, number, number)
+	local lvl = M.level(xp)                   -- 1..5
+	local low  = thresholds[lvl]             -- e.g., 0 for lvl1
+	local high = thresholds[lvl + 1] or thresholds[#thresholds]
+	return lvl, low, high
+end
+
+-- Progress within the current level
+--  returns: lvl(1..5), into (xp since low), span (needed to next), isMax(true at lvl5)
+function M.progress(xp: number): (number, number, number, boolean)
+	local lvl, low, high = M.bounds(xp)
+	if lvl >= 5 then
+		local span = high - low
+		return lvl, span, span, true
+	end
+	local span = math.max(1, high - low)
+	local into = math.clamp(xp - low, 0, span)
+	return lvl, into, span, false
+end
+
+-- Backwards-compat alias
+function M.rank(xp) return M.level(xp) end
+
+-- Live bonuses by level (lvl 1..5)
+function M.bonuses(styleId: string, xp: number)
+	local lvl = M.level(xp) -- 1..5
+	if styleId == "SwordShield" then
+		return { drFlat = 0.01 * lvl }                 -- +1..+5% DR
+	elseif styleId == "Bow" then
+		return { critDmgMul = 1.0 + 0.015 * lvl }      -- +1.5% per level
+	elseif styleId == "Mace" then
+		local map = {0.01, 0.03, 0.05, 0.07, 0.10}
+		return { stunChance = map[lvl] or 0.10 }       -- 1/3/5/7/10%
+	end
+	return {}
 end
 
 return M
