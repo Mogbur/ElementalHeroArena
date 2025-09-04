@@ -28,7 +28,7 @@ local RE_DMG  = ensureRemote("DamageNumbers")
 -- ===== tuning (safe require with fallback) =====
 local DEFAULT = {
 	MAX_LEVEL     = 5,
-	FIRE_RANGE    = 46,
+	FIRE_RANGE    = 46,   -- only used if module missing
 	QUAKE_RANGE   = 10,
 	AQUA_DURATION = 6,
 	CD            = { firebolt = 6, aquabarrier = 10, quakepulse = 10 },
@@ -43,9 +43,15 @@ local DEFAULT = {
 	},
 }
 
-local Tmod = RS:FindFirstChild("SkillTuning")
-local ok, T = pcall(function() return Tmod and require(Tmod) end)
-if not ok or type(T) ~= "table" then T = DEFAULT end
+local ok, T = pcall(function()
+	return require(RS:WaitForChild("Modules"):WaitForChild("SkillTuning"))
+end)
+if not ok or type(T) ~= "table" then
+	warn("[SkillCast] SkillTuning missing; using DEFAULT", T)
+	T = DEFAULT
+end
+
+-- harden: fill any missing fields from DEFAULT
 T.Skills        = T.Skills        or DEFAULT.Skills
 T.CD            = T.CD            or DEFAULT.CD
 T.FIRE_RANGE    = T.FIRE_RANGE    or DEFAULT.FIRE_RANGE

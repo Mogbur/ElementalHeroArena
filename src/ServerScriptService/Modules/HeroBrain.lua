@@ -7,6 +7,9 @@ local TweenService       = game:GetService("TweenService")
 local Debris             = game:GetService("Debris")
 local RunService         = game:GetService("RunService")
 
+local Styles  = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("WeaponStyles"))
+local Mastery = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("StyleMastery"))
+local T       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("SkillTuning"))
 local DamageNumbers = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("DamageNumbers"))
 
 -- Optional VFX bus
@@ -15,8 +18,6 @@ local RE_VFX  = Remotes:WaitForChild("SkillVFX", 10)
 
 local Brain  = {}
 local ACTIVE = setmetatable({}, { __mode = "k" })
-
-local T = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("SkillTuning"))
 
 -- show/hide the small separate shield bar under HP
 local SHOW_SHIELD_SUBBAR = false
@@ -162,11 +163,70 @@ function Brain.attach(hero: Model)
 		local plot = hero:FindFirstAncestorWhichIsA("Model")
 		if OWNER_ID == 0 and plot then OWNER_ID = plot:GetAttribute("OwnerUserId") or 0 end
 	end
+	local function getOwnerPlayer()
+		if OWNER_ID and OWNER_ID ~= 0 then
+			return Players:GetPlayerByUserId(OWNER_ID)
+		end
+	end
+
+	-- === Style helpers (inside attach so they can see 'hero') ===
+	local function currentStyleId()
+		local main = (hero:GetAttribute("WeaponMain") or "Sword"):lower()
+		local off  = (hero:GetAttribute("WeaponOff")  or ""):lower()
+		if main == "bow"  then return "Bow" end
+		if main == "mace" then return "Mace" end
+		if main == "sword" and off == "shield" then return "SwordShield" end
+		return "SwordShield"
+	end
+
+	local styleId, S, B
+	local BASE_MAX = hum.MaxHealth
+	local MELEE_DAMAGE   = 15
+	local SWING_COOLDOWN = 0.60
+
+	-- re-applied at wave start and when style attributes change
+	local function applyStyle()
+		styleId = currentStyleId()
+		S = Styles[styleId] or Styles.SwordShield
+
+		-- mastery bonuses for this style
+		local plr = getOwnerPlayer()
+		local xp  = tonumber(plr and plr:GetAttribute("MasteryXP_"..styleId)) or 0
+		B = Mastery.bonuses(styleId, xp)
+
+		-- Max HP mul
+		hum.MaxHealth = math.floor(BASE_MAX * (S.hpMul or 1.0) + 0.5)
+		hum.Health    = math.min(hum.Health, hum.MaxHealth)
+
+		-- Melee damage / swing speed muls (basic attacks)
+		local baseMelee = 15
+		MELEE_DAMAGE   = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
+		local baseSwing = 0.60
+		SWING_COOLDOWN = baseSwing / math.max(0.2, (S.spdMul or 1.0))
+	end
+
+	applyStyle()
+	hero:GetAttributeChangedSignal("WeaponMain"):Connect(applyStyle)
+	hero:GetAttributeChangedSignal("WeaponOff"):Connect(applyStyle)
+
+	-- crit params (fold Bow mastery crit-damage here)
+	local function getCritParams()
+		local chance, mult = 0.05, 2.0
+		local plot = hero:FindFirstAncestorWhichIsA("Model")
+		if plot then
+			chance = plot:GetAttribute("CritChance") or chance
+			mult   = plot:GetAttribute("CritMult")   or mult
+		end
+		chance = hero:GetAttribute("CritChance") or chance
+		mult   = hero:GetAttribute("CritMult")   or mult
+		if styleId == "Bow" and B and B.critDmgMul then
+			mult = mult * B.critDmgMul
+		end
+		return math.clamp(chance, 0, 1), math.max(1, mult)
+	end
 
 	-- tuning
 	local ATTACK_RANGE   = 6.0
-	local MELEE_DAMAGE   = 15
-	local SWING_COOLDOWN = 0.60
 	local REPATH_EVERY   = 0.25
 
 	local GCD_SECONDS = T.GLOBAL_CD or 3.0
@@ -193,14 +253,25 @@ function Brain.attach(hero: Model)
 		return (not h2) or h2.Health > 0
 	end
 
+	local function currentHP(m)
+		local hum2 = m:FindFirstChildOfClass("Humanoid")
+		if hum2 then return hum2.Health end
+		return m:GetAttribute("Health") or 1e9
+	end
+
 	local function pickTarget(): Instance?
-		local best, bestDist
+		local best, bestScore
 		for _, e in ipairs(CollectionService:GetTagged("Enemy")) do
 			if isMyEnemy(e) then
 				local p = targetPos(e)
 				if p then
-					local d = (p - hrp.Position).Magnitude
-					if not best or d < bestDist then best, bestDist = e, d end
+					local d  = (p - hrp.Position).Magnitude
+					local hp = currentHP(e)
+					local finisherBias = (hp <= 20) and -8 or 0
+					local score = d + finisherBias
+					if not best or score < bestScore then
+						best, bestScore = e, score
+					end
 				end
 			end
 		end
@@ -227,25 +298,18 @@ function Brain.attach(hero: Model)
 		return plot and (plot:GetAttribute("CombatLocked") == true) or false
 	end
 
-	-- crits
-	local function getCritParams()
-		local chance, mult = 0.05, 2.0
-		local plot = findPlot()
-		if plot then
-			chance = plot:GetAttribute("CritChance") or chance
-			mult = plot:GetAttribute("CritMult")  or mult
-		end
-		chance = hero:GetAttribute("CritChance") or chance
-		mult   = hero:GetAttribute("CritMult")  or mult
-		return math.clamp(chance, 0, 1), math.max(1, mult)
-	end
-
-	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?)
+	-- Damage & heal helpers (now with optional crit forcing / bonus)
+	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?, opts)
 		if amount <= 0 then return 0,false end
 		local isCrit = false
 		if allowCrit ~= false then
 			local c,m = getCritParams()
-			if math.random() < c then amount = amount * m; isCrit = true end
+			-- optional bonus to crit multiplier (e.g., Bow forced crit +40%)
+			if opts and opts.critBonusMul then m = m * math.max(0, opts.critBonusMul) end
+			if (opts and opts.forceCrit) or (math.random() < c) then
+				amount = amount * m
+				isCrit = true
+			end
 		end
 		local dealt = amount
 		local h2 = target:FindFirstChildOfClass("Humanoid")
@@ -301,6 +365,19 @@ function Brain.attach(hero: Model)
 		return canon(id)
 	end
 
+	-- respect slots
+	local function isEquipped(id: string?): boolean
+		id = canon(id)
+		if not id then return false end
+		local p = getEquippedSkill()
+		if id == p then return true end
+		local u = canon(hero:GetAttribute("Equip_Utility"))
+		if id == u then return true end
+		local s2 = canon(hero:GetAttribute("Equip_Secondary"))
+		if id == s2 then return true end
+		return false
+	end
+
 	local function getSkillLevel(id: string): number
 		id = canon(id) or ""
 		if id == "" then return 0 end
@@ -315,7 +392,6 @@ function Brain.attach(hero: Model)
 	local skillCDEnds = { firebolt=0, quakepulse=0, aquabarrier=0 }
 	local gcdEnds = 0
 
-	-- NEW: wave-start reset so first casts are instant each wave
 	local function resetAllCooldowns()
 		gcdEnds = 0
 		for k,_ in pairs(skillCDEnds) do skillCDEnds[k] = 0 end
@@ -325,8 +401,10 @@ function Brain.attach(hero: Model)
 		id = canon(id); if not id then return false end
 		if getSkillLevel(id) <= 0 then return false end
 		local now = time()
-		return (now >= (skillCDEnds[id] or 0)) and (now >= gcdEnds)
+		return (now >= (skillCDEnds[id] or 0)) and (now >= gcdEnds) and isEquipped(id)
 	end
+
+	private_guardReadyAt = 0 -- per-hero guard timer (SwordShield)
 
 	local function startCooldowns(id: string)
 		id = canon(id); if not id then return end
@@ -335,10 +413,17 @@ function Brain.attach(hero: Model)
 		gcdEnds = now + GCD_SECONDS
 	end
 
-	-- ===== Shield absorption (blue numbers) =====
+	-- ===== damage intake (Shield + Sword&Shield DR/Guard) =====
 	do
 		local reenter = false
 		local lastHealth = hum.Health
+
+		-- arm guard a couple seconds after wave starts
+		local function armGuard(initialDelay)
+			private_guardReadyAt = time() + (initialDelay or 2.0)
+		end
+		armGuard(2.0)
+
 		hum.HealthChanged:Connect(function(newHealth)
 			if reenter then return end
 			local old = lastHealth; lastHealth = newHealth
@@ -348,33 +433,58 @@ function Brain.attach(hero: Model)
 			end
 
 			local incoming = old - newHealth
-			local s  = hero:GetAttribute("ShieldHP") or 0
-			if s <= 0 then
-				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
-				return
+			local refund = 0
+
+			-- Sword&Shield: mastery DR + Guard (next hit DR on CD)
+			if styleId == "SwordShield" then
+				if B and B.drFlat and B.drFlat > 0 then
+					refund += incoming * B.drFlat
+				end
+				if time() >= private_guardReadyAt then
+					local cut = incoming * (S.guardDR or 0.10)
+					refund += cut
+					private_guardReadyAt = time() + (S.guardCD or 12.0)
+					-- optional: show a small blue "GUARD" number
+					local pp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+					if pp and cut > 0.5 then
+						DamageNumbers.pop(pp, "GUARD", Color3.fromRGB(120,180,255))
+					end
+				end
 			end
 
-			local absorbed = math.min(incoming, s)
-			if absorbed > 0 then
-				hero:SetAttribute("ShieldHP", s - absorbed)
+			-- Shield absorption (after DR so we don't over-refund)
+			local s  = hero:GetAttribute("ShieldHP") or 0
+			if s > 0 then
+				local remaining = math.max(0, incoming - refund)
+				local absorbed  = math.min(remaining, s)
+				if absorbed > 0 then
+					hero:SetAttribute("ShieldHP", s - absorbed)
+					refund += absorbed
+					local pp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+					if pp then
+						DamageNumbers.pop(pp, math.floor(absorbed+0.5), Color3.fromRGB(90,180,255))
+					end
+					if (s - absorbed) <= 0 then
+						hero:SetAttribute("ShieldExpireAt", 0)
+						if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
+					end
+				end
+			end
 
-				-- refund HP that shield took
+			if refund > 0 then
 				reenter = true
-				hum.Health = math.min(hum.MaxHealth, hum.Health + absorbed)
+				hum.Health = math.min(hum.MaxHealth, hum.Health + refund)
 				reenter = false
 				lastHealth = hum.Health
-
-				local pp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
-				if pp then
-					DamageNumbers.pop(pp, math.floor(absorbed+0.5), Color3.fromRGB(90,180,255))
-				end
-
-				if (s - absorbed) <= 0 then
-					hero:SetAttribute("ShieldExpireAt", 0)
-					if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
-				end
 			end
+
 			refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
+		end)
+
+		hero:GetAttributeChangedSignal("BarsVisible"):Connect(function()
+			if hero:GetAttribute("BarsVisible") == 1 then
+				armGuard(2.0)
+			end
 		end)
 
 		hero.AttributeChanged:Connect(function(a)
@@ -465,12 +575,12 @@ function Brain.attach(hero: Model)
 		if lv <= 0 then return end
 		hero:SetAttribute("CastTick", "aquabarrier@"..tostring(os.clock()))
 
-		local S = T.Skills.aquabarrier or {}
+		local SAqua = T.Skills.aquabarrier or {}
 		local L = math.clamp(lv, 1, T.MAX_LEVEL)
 
 		-- Shield
-		local shieldMax = (S.shield and S.shield[L]) or 0
-		local duration  = tonumber(S.duration) or (T.AQUA_DURATION or 6)
+		local shieldMax = (SAqua.shield and SAqua.shield[L]) or 0
+		local duration  = tonumber(SAqua.duration) or (T.AQUA_DURATION or 6)
 
 		hero:SetAttribute("ShieldMax",      shieldMax)
 		hero:SetAttribute("ShieldHP",       shieldMax)
@@ -490,8 +600,8 @@ function Brain.attach(hero: Model)
 
 		-- Lv5 HoT (green numbers)
 		if L >= T.MAX_LEVEL then
-			local hotTotal = tonumber(S.hotTotalLv5) or 50
-			local hotTicks = tonumber(S.hotTicks)    or 5
+			local hotTotal = tonumber(SAqua.hotTotalLv5) or 50
+			local hotTicks = tonumber(SAqua.hotTicks)    or 5
 			local per      = math.max(1, math.floor(hotTotal / math.max(1, hotTicks) + 0.5))
 			task.spawn(function()
 				for _ = 1, hotTicks do
@@ -510,9 +620,9 @@ function Brain.attach(hero: Model)
 
 		-- DoT aura (independent of bubble, follows the hero)
 		do
-			local total   = (S.dotTotal and S.dotTotal[L]) or 0
-			local ticks   = tonumber(S.dotTicks)  or 5
-			local radius  = tonumber(S.dotRadius) or 10
+			local total   = (SAqua.dotTotal and SAqua.dotTotal[L]) or 0
+			local ticks   = tonumber(SAqua.dotTicks)  or 5
+			local radius  = tonumber(SAqua.dotRadius) or 10
 			local perTick = math.max(1, math.floor(total / math.max(1, ticks) + 0.5))
 			task.spawn(function()
 				for _ = 1, ticks do
@@ -532,16 +642,61 @@ function Brain.attach(hero: Model)
 		end
 	end
 
-	local lastMelee = 0
+	-- Bow forced-crit tracker; Mace stun ICD per target
+	local bowSwingCount = 0
+	local lastStunAt = {} -- [Instance] = time()
+
 	local function tryMelee(target: Instance): boolean
 		local p = targetPos(target); if not p then return false end
 		local dist = (p - hrp.Position).Magnitude
 		if dist > ATTACK_RANGE then return false end
+
+		-- swing-rate
+		local lastMelee = hero:GetAttribute("__lastSwing") or 0
 		if time() - lastMelee < SWING_COOLDOWN then return true end
-		lastMelee = time()
+		hero:SetAttribute("__lastSwing", time())
+
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
-		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true)
+
+		-- Bow: every Nth basic is forced crit, with extra bonus multiplier
+		local forceCrit, critBonusMul = false, nil
+		if styleId == "Bow" and (S.forcedCritNth and S.forcedCritNth > 0) then
+			bowSwingCount += 1
+			if (bowSwingCount % S.forcedCritNth) == 0 then
+				forceCrit = true
+				if S.forcedCritBonus and S.forcedCritBonus ~= 0 then
+					critBonusMul = 1.0 + S.forcedCritBonus
+				end
+			end
+		end
+
+		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true, {
+			forceCrit     = forceCrit,
+			critBonusMul  = critBonusMul,
+		})
+
+		-- Mace: stun on hit with rank chance, per-target ICD; miniboss/boss half duration
+		if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
+			local now = time()
+			local last = lastStunAt[target] or 0
+			if (now - last) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
+				lastStunAt[target] = now
+				local dur = S.stunDur or 0.60
+				local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
+				if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur = dur * 0.5 end
+				local h2 = target:FindFirstChildOfClass("Humanoid")
+				if h2 then
+					local pre = h2.WalkSpeed
+					h2.WalkSpeed = 0
+					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
+					task.delay(dur, function()
+						if h2 and h2.Parent then h2.WalkSpeed = pre end
+					end)
+				end
+			end
+		end
 		return true
 	end
 
@@ -549,10 +704,11 @@ function Brain.attach(hero: Model)
 	local conns = {}
 	table.insert(conns, hero.Destroying:Connect(function() Brain.detach(hero) end))
 
-	-- NEW: also reset CDs when wave HUD turns on for the hero
+	-- also reset CDs + (re)apply style when wave HUD turns on for the hero
 	table.insert(conns, hero:GetAttributeChangedSignal("BarsVisible"):Connect(function()
 		if hero:GetAttribute("BarsVisible") == 1 then
 			resetAllCooldowns()
+			applyStyle()
 		end
 	end))
 
@@ -584,7 +740,6 @@ function Brain.attach(hero: Model)
 				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
 			end
 
-			-- If the plot is in a locked state (countdown / between waves), do nothing.
 			if isCombatLocked() then
 				hum:MoveTo(hrp.Position)
 				continue
@@ -592,12 +747,10 @@ function Brain.attach(hero: Model)
 
 			local target = pickTarget()
 
-			-- === Auto skills (no "equipped" gating) ===
-
-			-- AquaBarrier: HP < 65% and at least 1 enemy nearby
-			if canUseSkill("aquabarrier") and getSkillLevel("aquabarrier") > 0 then
+			-- Utility: AquaBarrier (only if equipped)
+			if canUseSkill("aquabarrier") then
 				local hpFrac = hum.Health / math.max(1, hum.MaxHealth)
-				local needHP = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.65
+				local needHP = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.75
 				if hpFrac <= needHP and enemiesNear(hrp.Position, 12) >= 1 then
 					cast_aquabarrier(getSkillLevel("aquabarrier"))
 					startCooldowns("aquabarrier")
@@ -606,8 +759,7 @@ function Brain.attach(hero: Model)
 			end
 
 			if target then
-				-- QuakePulse: 2+ enemies in cone/radius
-				if canUseSkill("quakepulse") and getSkillLevel("quakepulse") > 0 then
+				if canUseSkill("quakepulse") then
 					local hits = getEnemiesInCone(hrp.Position, hrp.CFrame.LookVector, QUAKE_RANGE, QUAKE_ANGLE)
 					if #hits >= (T.Client and T.Client.QUAKE_MIN_ENEMIES or 2) then
 						cast_quake(target, getSkillLevel("quakepulse"))
@@ -616,8 +768,7 @@ function Brain.attach(hero: Model)
 					end
 				end
 
-				-- Firebolt: target within range
-				if canUseSkill("firebolt") and getSkillLevel("firebolt") > 0 then
+				if canUseSkill("firebolt") then
 					local p = targetPos(target)
 					if p and (p - hrp.Position).Magnitude <= FIRE_RANGE then
 						cast_firebolt(target, getSkillLevel("firebolt"))
