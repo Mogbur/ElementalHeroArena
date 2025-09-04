@@ -218,7 +218,7 @@ local function wireStand(stand: Model)
 	local prompt = stand:FindFirstChildOfClass("ProximityPrompt")
 	if not prompt then
 		prompt = Instance.new("ProximityPrompt")
-		prompt.MaxActivationDistance = 14
+		prompt.MaxActivationDistance = 6
 		prompt.HoldDuration = 0
 		prompt.RequiresLineOfSight = false
 		prompt.Parent = root -- attach to the root so UI hovers near the stand base
