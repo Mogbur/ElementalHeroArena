@@ -9,6 +9,9 @@ local WeaponsFolder   = ReplicatedStorage:WaitForChild("Weapons")
 local SSS = game:GetService("ServerScriptService")
 local WeaponVisuals = require(SSS.RojoServer.Modules.WeaponVisuals)
 
+-- bring WeaponStyles so we can apply HP/ATK/SPD multipliers
+local WeaponStyles = require(ReplicatedStorage.Modules.WeaponStyles)
+
 -- ========= helpers =========
 
 local function firstBasePartIn(model: Instance): BasePart?
@@ -78,10 +81,8 @@ end
 
 -- small posing helpers
 local OFFSETS = {
-	-- for StandSwordShield
-	SwordShield_Sword  = CFrame.Angles(math.rad(180), 0, math.rad(0)), -- tip down + slight roll
-	SwordShield_Shield = CFrame.Angles(0, math.rad(180), 0),            -- face outward
-	-- for single-weapon stands
+	SwordShield_Sword  = CFrame.Angles(math.rad(180), 0, math.rad(0)),
+	SwordShield_Shield = CFrame.Angles(0, math.rad(180), 0),
 	Bow  = CFrame.Angles(0, math.rad(90), 0),
 	Mace = CFrame.Angles(math.rad(180), 0, 0),
 }
@@ -166,6 +167,26 @@ local function setStyleOnHero(hero: Model, style: string)
 	end
 end
 
+-- apply base HP/ATK/SPD multipliers + CurrentStyle to player, and re-scale HP smoothly
+local function applyBaseMults(player: Player, hero: Model, styleId: string)
+	local S = WeaponStyles[styleId] or {}
+	player:SetAttribute("CurrentStyle", styleId)
+	player:SetAttribute("StyleAtkMul", S.atkMul or 1)
+	player:SetAttribute("StyleSpdMul", S.spdMul or 1)
+	player:SetAttribute("StyleHpMul",  S.hpMul  or 1)
+
+	local hum = hero:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 then
+		local lastMul = player:GetAttribute("LastHpMul") or 1
+		local baseMax = hum.MaxHealth / math.max(0.01, lastMul)
+		local newMax  = math.max(1, baseMax * (S.hpMul or 1))
+		local ratio   = hum.Health / math.max(1, hum.MaxHealth)
+		hum.MaxHealth = newMax
+		hum.Health    = math.clamp(newMax * ratio, 1, newMax)
+		player:SetAttribute("LastHpMul", S.hpMul or 1)
+	end
+end
+
 local function onStandTriggered(stand: Model, player: Player)
 	local plot = findPlot(stand); if not plot then return end
 	local ownerId = plot:GetAttribute("OwnerUserId") or 0
@@ -179,7 +200,9 @@ local function onStandTriggered(stand: Model, player: Player)
 	setStyleOnHero(hero, style)
 	player:SetAttribute("WeaponMain", hero:GetAttribute("WeaponMain"))
 	player:SetAttribute("WeaponOff",  hero:GetAttribute("WeaponOff"))
-    pcall(function() WeaponVisuals.apply(hero) end)
+
+	applyBaseMults(player, hero, style) -- apply multipliers immediately
+	pcall(function() WeaponVisuals.apply(hero) end)
 
 	-- Refresh all stands in this plot
 	for _, s in ipairs(plot:GetDescendants()) do

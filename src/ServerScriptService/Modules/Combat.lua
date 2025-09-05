@@ -1,5 +1,10 @@
--- ReplicatedStorage/Modules/Combat.lua
+-- ServerScriptService/Modules/Combat.lua
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local WeaponStyles = require(RS.Modules.WeaponStyles)
+local StyleMastery = require(RS.Modules.StyleMastery)
 
 local Combat = {}
 
@@ -39,7 +44,6 @@ end
 -- Uses attributes:
 --   ShieldHP (number)        - remaining pool
 --   ShieldUntil (os.clock()) - absolute expiry time (seconds)
--- When pool hits 0 OR time is up, clears both and relies on client VFX to auto-despawn.
 local function absorbShield(target, amount)
 	local m = modelOf(target)
 	if not (m and amount and amount > 0) then return amount end
@@ -58,47 +62,145 @@ local function absorbShield(target, amount)
 	-- soak damage from pool
 	local remain = amount - shp
 	if remain <= 0 then
-		-- still shield left after soaking
 		m:SetAttribute("ShieldHP", shp - amount)
 		return 0
 	else
-		-- broke the shield
 		m:SetAttribute("ShieldHP", 0)
 		m:SetAttribute("ShieldUntil", 0)
 		return remain
 	end
 end
 
+-- === Style runtime (tiny, local) ===
+local bowCount = setmetatable({}, {__mode="k"})     -- [Player] = int
+local guardT   = setmetatable({}, {__mode="k"})     -- [Player] = os.clock()
+
+local function styleIdFor(plr: Player)
+	local main = (plr:GetAttribute("WeaponMain") or "Sword"):lower()
+	local off  = (plr:GetAttribute("WeaponOff")  or ""):lower()
+	if main == "bow" then return "Bow"
+	elseif main == "mace" then return "Mace"
+	elseif main == "sword" and off == "shield" then return "SwordShield"
+	else return plr:GetAttribute("CurrentStyle") or "SwordShield" end
+end
+
+local function snap(plr: Player)
+	local id = styleIdFor(plr)
+	local W  = WeaponStyles[id] or {}
+	local xp = plr:GetAttribute("StyleXP_"..id) or 0
+	local B  = StyleMastery.bonuses(id, xp) or {}
+	return {
+		id = id,
+		atk = W.atkMul or 1, spd = W.spdMul or 1, hp = W.hpMul or 1,
+		-- S&S
+		guardDR = W.guardDR or 0.5, guardCD = W.guardCD or 6, drFlat = B.drFlat or 0,
+		-- Bow
+		nth = W.forcedCritNth or 6, bonus = W.forcedCritBonus or 0.4, critMul = B.critDmgMul or 1,
+		-- Mace
+		stunChance = B.stunChance or 0, stunDur = W.stunDur or 0.6,
+	}
+end
+
+local function outgoingFromStyle(attacker: Player, baseDamage: number, isBasic: boolean)
+	if not attacker then return baseDamage, {} end
+	local S = snap(attacker)
+
+	-- Only basics get offensive style mods. Skills/spells pass isBasic=false.
+	local mul = 1.0
+	local flags = { style = S.id, forcedCrit = false, critDmgMul = 1, stun = false, stunDur = 0 }
+
+	if isBasic then
+		-- base damage multiplier from style
+		mul *= (S.atk or 1)
+
+		-- Bow: every Nth BASIC is a forced crit (+bonus damage and extra crit multiplier from mastery)
+		if S.id == "Bow" then
+			bowCount[attacker] = (bowCount[attacker] or 0) + 1
+			if bowCount[attacker] % (S.nth or 6) == 0 then
+				flags.forcedCrit = true
+				mul *= (1 + (S.bonus or 0))
+				flags.critDmgMul = S.critMul or 1
+			end
+		-- Mace: BASIC hits can stun (chance from mastery)
+		elseif S.id == "Mace" and math.random() < (S.stunChance or 0) then
+			flags.stun = true
+			flags.stunDur = S.stunDur or 0.6
+		end
+	end
+
+	return baseDamage * mul, flags
+end
+
+local function incomingFromStyle(targetPlayer: Player, damage: number)
+	if not targetPlayer then return damage end
+	local S = snap(targetPlayer)
+
+	-- Passive DR from mastery
+	damage *= (1 - (S.drFlat or 0))
+
+	-- S&S guard: every guardCD seconds, reduce the next hit by guardDR
+	if S.id == "SwordShield" then
+		local last = guardT[targetPlayer] or (os.clock() - 999)
+		if (os.clock() - last) >= S.guardCD then
+			guardT[targetPlayer] = os.clock()
+			damage *= (1 - S.guardDR)
+		end
+	end
+	return damage
+end
+
 -- ==================== damage APIs ====================
-function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem)
+function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasic)
+	-- style: outgoing first (attacker)
+	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
 	if not target or not baseDamage or baseDamage <= 0 then return false, 0 end
 
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
-	local elemMultOut = 1.0
 
-	-- Element reading (from model/part)
-	local targetElem
+	-- element multiplier
+	local targetElem = "Neutral"
 	if model then
 		targetElem = model:GetAttribute("Element") or "Neutral"
 	elseif typeof(target) == "Instance" and target:IsA("BasePart") then
 		targetElem = target:GetAttribute("Element") or "Neutral"
-	else
-		targetElem = "Neutral"
 	end
-	elemMultOut = elemMult(attackElem, targetElem)
+	local elemMultOut = elemMult(attackElem, targetElem)
 
-	local dmg = math.max(0, math.floor(baseDamage * elemMultOut + 0.5))
+	-- damage after elements
+	local dmg = math.max(0, math.floor(outDmg * elemMultOut + 0.5))
 
-	-- If the *target* has a humanoid, we apply humanoid damage (with shield-absorb first)
+	-- If the *target* has a humanoid, apply humanoid damage (with incoming reductions + shield + crit)
 	if model then
 		local hum = model:FindFirstChildOfClass("Humanoid")
 		if hum and hum.Health > 0 then
-			-- shield absorb (only if the target has a shield)
+			-- incoming reductions (only apply if it's a Player character)
+			local targetPlayer = Players:GetPlayerFromCharacter(model)
+			dmg = incomingFromStyle(targetPlayer, dmg)
+
+			-- shield absorb (attributes on target)
 			local afterShield = absorbShield(model, dmg)
+
+			-- forced-crit extra crit damage (bow cadence)
+			if flags.forcedCrit and (flags.critDmgMul or 1) > 1 then
+				afterShield = math.floor(afterShield * flags.critDmgMul + 0.5)
+			end
+
 			if afterShield > 0 then
 				hum:TakeDamage(afterShield)
 			end
+
+			-- optional: mace stun (simple WalkSpeed zero)
+			if flags.stun and afterShield > 0 then
+				local old = hum.WalkSpeed
+				hum.WalkSpeed = 0
+				task.delay(flags.stunDur or 0.6, function()
+					if hum.Parent and hum.Health > 0 then
+						hum.WalkSpeed = old
+					end
+				end)
+			end
+
 			model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or 0)
 			local dead = hum.Health <= 0
 			return dead, (afterShield > 0) and afterShield or 0
@@ -109,7 +211,6 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem)
 	if typeof(target) == "Instance" and target:IsA("BasePart") then
 		local health = target:GetAttribute("Health")
 		if health then
-			-- (rare) parts can also carry a shield (same rules)
 			local afterShield = absorbShield(target, dmg)
 			if afterShield > 0 then
 				health -= afterShield
@@ -134,7 +235,7 @@ function Combat.ApplyAOE(sourcePlayer, centerPos: Vector3, radius, baseDamage, a
 		local m = findEnemyModel(part)
 		if m and not hitModels[m] then
 			hitModels[m] = true
-			Combat.ApplyDamage(sourcePlayer, m, baseDamage, attackElem)
+			Combat.ApplyDamage(sourcePlayer, m, baseDamage, attackElem, false)
 			if rootSeconds and rootSeconds > 0 then
 				m:SetAttribute("RootUntil", os.clock() + rootSeconds)
 			end

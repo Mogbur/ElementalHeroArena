@@ -1,10 +1,35 @@
 -- ServerScriptService/SkillCast.server.lua
 -- Receives CastSkillRequest, finds a target, applies damage, broadcasts VFX + numbers.
--- v1.3: no ForceField push on AquaBarrier, heal/shield numbers are numeric + colored,
---       also writes legacy BarrierUntil for old UI, fixed FindFirstChild typo.
 
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
+local SSS     = game:GetService("ServerScriptService")
+
+-- === robust require for Combat (SSS.RojoServer.Modules, SSS.Modules, or RS.Modules) ===
+local function requireCombat()
+	-- 1) ServerScriptService/RojoServer/Modules/Combat
+	local rojo = SSS:FindFirstChild("RojoServer")
+	if rojo then
+		local mods = rojo:FindFirstChild("Modules")
+		local c = mods and mods:FindFirstChild("Combat")
+		if c then return require(c) end
+	end
+	-- 2) ServerScriptService/Modules/Combat
+	local mods2 = SSS:FindFirstChild("Modules")
+	local c2 = mods2 and mods2:FindFirstChild("Combat")
+	if c2 then return require(c2) end
+	-- 3) ReplicatedStorage/Modules/Combat
+	local mods3 = RS:FindFirstChild("Modules")
+	local c3 = mods3 and mods3:FindFirstChild("Combat")
+	if c3 then return require(c3) end
+
+	error("Combat module not found. Expected at:\n" ..
+	      " - ServerScriptService/RojoServer/Modules/Combat.lua\n" ..
+	      " - ServerScriptService/Modules/Combat.lua\n" ..
+	      " - ReplicatedStorage/Modules/Combat.lua")
+end
+local Combat = requireCombat()
+-- ================================================================================
 
 -- ===== remotes (self-ensuring) =====
 local Remotes = RS:FindFirstChild("Remotes") or Instance.new("Folder")
@@ -28,7 +53,7 @@ local RE_DMG  = ensureRemote("DamageNumbers")
 -- ===== tuning (safe require with fallback) =====
 local DEFAULT = {
 	MAX_LEVEL     = 5,
-	FIRE_RANGE    = 46,   -- only used if module missing
+	FIRE_RANGE    = 46,
 	QUAKE_RANGE   = 10,
 	AQUA_DURATION = 6,
 	CD            = { firebolt = 6, aquabarrier = 10, quakepulse = 10 },
@@ -51,7 +76,7 @@ if not ok or type(T) ~= "table" then
 	T = DEFAULT
 end
 
--- harden: fill any missing fields from DEFAULT
+-- harden
 T.Skills        = T.Skills        or DEFAULT.Skills
 T.CD            = T.CD            or DEFAULT.CD
 T.FIRE_RANGE    = T.FIRE_RANGE    or DEFAULT.FIRE_RANGE
@@ -173,7 +198,9 @@ local function castFirebolt(plr, lv, hero, plot)
 
 	local dmg = fireboltDamage(lv)
 	if hasFractureFrom(target, plr) then dmg = math.floor(dmg * 1.15 + 0.5) end
-	hum:TakeDamage(dmg)
+
+	-- route through Combat to pick up style/mastery/element
+	local _, applied = Combat.ApplyDamage(plr, target, dmg, "Fire", false)
 
 	if RE_VFX then
 		RE_VFX:FireAllClients({
@@ -182,8 +209,9 @@ local function castFirebolt(plr, lv, hero, plot)
 			to   = tpp.Position + Vector3.new(0, 2.0, 0)
 		})
 	end
-	popNumber(dmg, tpp.Position, Color3.fromRGB(255, 220, 140), "skill")
+	popNumber(applied, tpp.Position, Color3.fromRGB(255, 220, 140), "skill")
 
+	-- Lv5 DoT
 	if lv >= 5 then
 		local total = math.floor(fireboltDamage(lv) * 0.45 + 0.5)
 		if hasFractureFrom(target, plr) then total = math.floor(total * 1.15 + 0.5) end
@@ -191,8 +219,8 @@ local function castFirebolt(plr, lv, hero, plot)
 		task.spawn(function()
 			for i = 1, 4 do
 				if hum.Health <= 0 then break end
-				hum:TakeDamage(perTick)
-				popNumber(perTick, tpp.Position, Color3.fromRGB(255, 140, 100), "skill")
+				local _, tickApplied = Combat.ApplyDamage(plr, target, perTick, "Fire", false)
+				popNumber(tickApplied, tpp.Position, Color3.fromRGB(255, 140, 100), "skill")
 				task.wait(1.0)
 			end
 		end)
@@ -229,13 +257,12 @@ local function castAquaBarrier(plr, lv, hero, plot)
 	local hpThresh = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.75
 	if (hum.Health / math.max(1, hum.MaxHealth)) > hpThresh then return end
 
-	-- NO ForceField (that was pushing enemies). Only attributes + visual.
+	-- attributes for barrier (no ForceField push)
 	hero:SetAttribute("ShieldHP", shield)
 	hero:SetAttribute("ShieldUntil", os.clock() + duration)
 	hero:SetAttribute("ShieldExpireAt", os.clock() + duration)
-	hero:SetAttribute("BarrierUntil", os.clock() + duration) -- legacy for old HUDs
+	hero:SetAttribute("BarrierUntil", os.clock() + duration)
 
-	-- show a blue number for shield grant (numeric amount)
 	popNumber(shield, hpp.Position + Vector3.new(0, 2.2, 0), Color3.fromRGB(90,180,255), "shield")
 
 	if RE_VFX then
@@ -260,7 +287,7 @@ local function castAquaBarrier(plr, lv, hero, plot)
 		end
 	end)
 
-	-- DoT aura
+	-- DoT aura (damage via Combat)
 	task.spawn(function()
 		for _ = 1, ticks do
 			if not livingHumanoid(hero) then break end
@@ -268,15 +295,15 @@ local function castAquaBarrier(plr, lv, hero, plot)
 			for _, enemy in ipairs(enemiesIn(plot)) do
 				local eh, pp = livingHumanoid(enemy), primaryPart(enemy)
 				if eh and pp and (pp.Position - center).Magnitude <= radius then
-					eh:TakeDamage(perTick)
-					popNumber(perTick, pp.Position, Color3.fromRGB(120,180,255), "skill")
+					local _, tickApplied = Combat.ApplyDamage(plr, enemy, perTick, "Water", false)
+					popNumber(tickApplied, pp.Position, Color3.fromRGB(120,180,255), "skill")
 				end
 			end
 			task.wait(1.0)
 		end
 	end)
 
-	-- Lv5 HoT (green numeric, works with old HUDs too)
+	-- Lv5 HoT (unchanged)
 	if L >= T.MAX_LEVEL then
 		local hotTotal = tonumber(S.hotTotalLv5) or 50
 		local hotTicks = tonumber(S.hotTicks)    or 5
@@ -309,9 +336,9 @@ local function castQuakePulse(plr, lv, hero, plot)
 	for _, enemy in ipairs(enemiesIn(plot)) do
 		local hum, pp = livingHumanoid(enemy), primaryPart(enemy)
 		if hum and pp and (pp.Position - hpp.Position).Magnitude <= radius then
-			hum:TakeDamage(base)
+			local _, applied = Combat.ApplyDamage(plr, enemy, base, "Earth", false)
 			markFracture(enemy, plr)
-			popNumber(base, pp.Position, Color3.fromRGB(255, 210, 120), "skill")
+			popNumber(applied, pp.Position, Color3.fromRGB(255, 210, 120), "skill")
 		end
 	end
 
@@ -320,8 +347,8 @@ local function castQuakePulse(plr, lv, hero, plot)
 		for _, enemy in ipairs(enemiesIn(plot)) do
 			local hum, pp = livingHumanoid(enemy), primaryPart(enemy)
 			if hum and pp and (pp.Position - hpp.Position).Magnitude <= radius then
-				hum:TakeDamage(half)
-				popNumber(half, pp.Position, Color3.fromRGB(255, 200, 120), "skill")
+				local _, applied = Combat.ApplyDamage(plr, enemy, half, "Earth", false)
+				popNumber(applied, pp.Position, Color3.fromRGB(255, 200, 120), "skill")
 			end
 		end
 	end)
