@@ -53,12 +53,12 @@ local RE_DMG  = ensureRemote("DamageNumbers")
 -- ===== tuning (safe require with fallback) =====
 local DEFAULT = {
 	MAX_LEVEL     = 5,
-	FIRE_RANGE    = 46,
+	FIRE_RANGE    = 45,
 	QUAKE_RANGE   = 10,
 	AQUA_DURATION = 6,
 	CD            = { firebolt = 6, aquabarrier = 10, quakepulse = 10 },
 	Skills = {
-		firebolt    = { hit = {30,40,50,60,75}, range = 46, cd = 6,  dotPctLv5 = 0.45 },
+		firebolt    = { hit = {30,40,50,60,75}, range = 45, cd = 6,  dotPctLv5 = 0.45 },
 		aquabarrier = { dmg = {22,30,38,48,60}, radius = 10, duration = 6, cd = 10,
 		                hotTotalLv5 = 70, hotTicks = 5, selfDoubleHoT = true,
 		                dotTotal = {22,30,38,48,60}, dotTicks = 5, dotRadius = 10,

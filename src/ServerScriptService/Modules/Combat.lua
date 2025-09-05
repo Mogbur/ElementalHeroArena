@@ -157,6 +157,15 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
+	
+	-- >>> INVULN WINDOW (hero at wave start etc.)
+	if model then
+		local untilT = tonumber(model:GetAttribute("InvulnUntil")) or 0
+		if os.clock() < untilT then
+			return false, 0
+		end
+	end
+	-- <<<
 
 	-- element multiplier
 	local targetElem = "Neutral"

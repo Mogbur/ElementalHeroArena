@@ -86,7 +86,7 @@ local DEFAULT_ATTRS = {
 	CritChance   = 0.03,
 	CritMult     = 2.0,
 }
-
+local START_INVULN_SEC = 0.90 -- was 0.35
 -- === Fight tuning ===
 local ENEMY_TTL_SEC       = 60
 local BETWEEN_SPAWN_Z     = 5.5
@@ -347,6 +347,36 @@ local function findHeroAnchor(plot)
 		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
 	end
 end
+-- Add to 01_PlotService.server.lua
+local function teleportHeroToIdle(plot: Model)
+	local hero = plot and plot:FindFirstChild("Hero", true)
+	if not hero then return end
+	local hum = hero:FindFirstChildOfClass("Humanoid")
+
+	-- prefer the true idle anchor; then Spawn pad; never HeroSpawn here
+	local idle =
+		getAnchor(plot, HERO_IDLE_ANCHOR)     -- "03_HeroAnchor"
+		or findHeroAnchor(plot)
+		or getAnchor(plot, SPAWN_ANCHOR)      -- "02_SpawnAnchor"
+		or plot.PrimaryPart
+
+	-- pivot a bit above pad to avoid clipping into ground
+	local pivot = idle and idle:IsA("BasePart") and idle.CFrame or hero:GetPivot()
+	hero:PivotTo(pivot + Vector3.new(0, 2.5, 0))
+
+	-- clear combat UI / barrier
+	hero:SetAttribute("BarsVisible", 0)
+	hero:SetAttribute("ShieldHP", 0)
+	hero:SetAttribute("ShieldMax", 0)
+	hero:SetAttribute("ShieldExpireAt", 0)
+
+	-- stand up & heal
+	if hum then
+		hum.Sit = false
+		hum.PlatformStand = false
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+end
 
 local function getBannerAnchorPart(plot)
 	local p = plot:FindFirstChild(BANNER_ANCHOR, true)
@@ -565,7 +595,7 @@ local function teleportHeroTo(plot, anchorName, opts)
 			bp.Anchored = false
 			bp.AssemblyLinearVelocity  = Vector3.zero
 			bp.AssemblyAngularVelocity = Vector3.zero
-			pcall(function() PhysicsService:SetPartCollisionGroup(bp, "Hero") end)
+			bp.CollisionGroup = "Hero"
 		end
 	end
 
@@ -1064,6 +1094,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			setCombatLock(plot, false)
 
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)
+			hero:SetAttribute("InvulnUntil", os.clock() + START_INVULN_SEC)
 			cleanupLeftovers_local()
 
 			-- enable/disable 2H IK per current weapon (for normal waves)
@@ -1091,7 +1122,7 @@ local function runFightLoop(plot, portal, owner, opts)
 				local cpStart = ((startWave - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
-				teleportHeroTo(plot, HERO_IDLE_ANCHOR, {fullHeal = true})
+				teleportHeroToIdle(plot)          -- <— new one-liner
 				cleanupLeftovers_local()
 				freezeHeroAtIdle(plot)
 				task.defer(pinFrozenHeroToIdleGround, plot)
@@ -1118,7 +1149,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			postWaveHeal(hero)
 		end
 		setCombatLock(plot, true)
-		teleportHeroTo(plot, HERO_IDLE_ANCHOR)
+		teleportHeroToIdle(plot)
 		freezeHeroAtIdle(plot)
 		task.defer(pinFrozenHeroToIdleGround, plot)
 		cleanupLeftovers_local()
@@ -1164,6 +1195,10 @@ local function startWaveCountdown(plot, portal, owner)
 	setModelFrozen(h, false)
 	h:SetAttribute("BarsVisible", 1)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
+	h:SetAttribute("InvulnUntil", os.clock() + START_INVULN_SEC)
+	setCombatLock(plot, true)
+	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
+
 
 	-- enable/disable 2H IK for the first wave (preSpawned path)
 	do

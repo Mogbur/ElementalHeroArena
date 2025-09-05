@@ -47,12 +47,12 @@ function M.rank(xp) return M.level(xp) end
 function M.bonuses(styleId: string, xp: number)
 	local lvl = M.level(xp) -- 1..5
 	if styleId == "SwordShield" then
-		return { drFlat = 0.01 * lvl }                 -- +1..+5% DR
+		return { drFlat = 0.03 * lvl }                 -- +3..+15% DR
 	elseif styleId == "Bow" then
-		return { critDmgMul = 1.0 + 0.015 * lvl }      -- +1.5% per level
+		return { critDmgMul = 1.0 + 0.02 * lvl }      -- +2% per level
 	elseif styleId == "Mace" then
-		local map = {0.01, 0.03, 0.05, 0.07, 0.10}
-		return { stunChance = map[lvl] or 0.10 }       -- 1/3/5/7/10%
+		local map = {0.03, 0.06, 0.08, 0.10, 0.15}
+		return { stunChance = map[lvl] or 0.10 }       -- 3/6/8/10/15%
 	end
 	return {}
 end

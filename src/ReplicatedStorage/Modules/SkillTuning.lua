@@ -15,6 +15,11 @@ local Skills = {
 		hotTicks = 5,
 	},
 }
+-- NEW: top-level knobs so Bow basic and Firebolt can differ
+local RANGES = {
+	FIREBOLT = Skills.firebolt.range, -- skill cast gate
+	BOW_BASIC = 36,                   -- bow “basic attack” gate (doesn’t change stand distance while stopAt=18)
+}
 
 local CLIENT = {
 	TICK = 0.10,
@@ -49,7 +54,11 @@ end
 return {
 	MAX_LEVEL = MAX,
 	Skills = Skills,
-	FIRE_RANGE = Skills.firebolt.range,
+	-- NEW exports
+	FIREBOLT_RANGE = RANGES.FIREBOLT,
+	BOW_BASIC_RANGE = RANGES.BOW_BASIC,
+	-- Back-compat fields other modules may still read
+	FIRE_RANGE = RANGES.FIREBOLT,
 	QUAKE_RANGE = Skills.quakepulse.radius,
 	AQUA_DURATION = Skills.aquabarrier.duration,
 	CD = {

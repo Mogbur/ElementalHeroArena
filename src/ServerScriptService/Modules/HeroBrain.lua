@@ -296,20 +296,25 @@ function Brain.attach(hero: Model)
 		return plot and (plot:GetAttribute("CombatLocked") == true) or false
 	end
 
-	-- Damage & heal helpers (now with optional crit forcing / bonus)
+	-- REPLACE applyDamage() in HeroBrain with this version
 	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?, opts)
 		if amount <= 0 then return 0,false end
+
+		opts = opts or {}
 		local isCrit = false
+		local dealt  = amount
+
+		-- normal crits, unless disabled
 		if allowCrit ~= false then
-			local c,m = getCritParams()
-			-- optional bonus to crit multiplier (e.g., Bow forced crit +40%)
-			if opts and opts.critBonusMul then m = m * math.max(0, opts.critBonusMul) end
-			if (opts and opts.forceCrit) or (math.random() < c) then
-				amount = amount * m
+			local c, m = getCritParams()
+			-- (We intentionally do NOT fold Bow mastery critDmgMul here so skills aren't affected.)
+			if (opts.forceCrit) or (math.random() < c) then
+				dealt = dealt * m
 				isCrit = true
 			end
 		end
-		local dealt = amount
+
+		-- damage application
 		local h2 = target:FindFirstChildOfClass("Humanoid")
 		local pp = (target:IsA("Model") and (target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart))
 			or (target:IsA("BasePart") and target)
@@ -319,9 +324,11 @@ function Brain.attach(hero: Model)
 			local hp = target:GetAttribute("Health")
 			if hp then target:SetAttribute("Health", math.max(0, hp - dealt)) end
 		end
+
+		-- numbers (displayCrit = show red/big, but without crit multiplier)
 		if pp then
 			local shown = math.floor(dealt + 0.5)
-			if isCrit then
+			if isCrit or opts.displayCrit then
 				DamageNumbers.pop(pp, shown, Color3.fromRGB(255,90,90), {duration=1.35, rise=10, sizeMul=1.35})
 			else
 				DamageNumbers.pop(pp, shown, color or Color3.fromRGB(255,235,130))
@@ -329,6 +336,7 @@ function Brain.attach(hero: Model)
 		end
 		return dealt, isCrit
 	end
+
 
 	local function applyHeal(model: Instance, amount: number)
 		local h = model:FindFirstChildOfClass("Humanoid")
@@ -589,69 +597,96 @@ function Brain.attach(hero: Model)
 		end
 	end
 
-	-- Bow forced-crit tracker; Mace stun ICD per target
+	-- REPLACE tryMelee() in HeroBrain with this version
 	local bowSwingCount = 0
-	local lastStunAt = {} -- [Instance] = time()
+local lastStunAt = {} -- [Instance] = time()
 
-	local function tryMelee(target: Instance): boolean
-		local p = targetPos(target); if not p then return false end
-		local dist = (p - hrp.Position).Magnitude
-		if dist > ATTACK_RANGE then return false end
+local function tryMelee(target: Instance): boolean
+	local p = targetPos(target); if not p then return false end
+	local dist = (p - hrp.Position).Magnitude
 
-		-- swing-rate
-		local lastMelee = hero:GetAttribute("__lastSwing") or 0
-		if time() - lastMelee < SWING_COOLDOWN then return true end
+	-- ===== Bow: ranged basic =====
+	if styleId == "Bow" then
+		-- fire only inside basic range; otherwise let the mover close distance
+		local basicRange = T.BOW_BASIC_RANGE or T.FIRE_RANGE or 90
+		if dist > basicRange then return false end
+
+		local last = hero:GetAttribute("__lastSwing") or 0
+		if time() - last < SWING_COOLDOWN then return true end
 		hero:SetAttribute("__lastSwing", time())
 
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
 
-		-- Bow: every Nth BASIC is a forced crit (+bonus damage on that swing),
-		-- and mastery crit-dmg mul applies to basics only.
-		local dmgBase = MELEE_DAMAGE
-		local forceCrit    = false
-		local critBonusMul = 1
-
-		if styleId == "Bow" and (S.forcedCritNth and S.forcedCritNth > 0) then
+		local surge = false
+		if S.forcedCritNth and S.forcedCritNth > 0 then
 			bowSwingCount += 1
-			if (bowSwingCount % S.forcedCritNth) == 0 then
-				forceCrit = true
-				dmgBase = dmgBase * (1 + (S.forcedCritBonus or 0))
-				if B and B.critDmgMul and B.critDmgMul > 1 then
-					critBonusMul = B.critDmgMul
-				end
-			end
+			if (bowSwingCount % S.forcedCritNth) == 0 then surge = true end
+		end
+		local dmg = MELEE_DAMAGE
+		if surge and S.forcedCritBonus and S.forcedCritBonus ~= 0 then
+			dmg = dmg * (1 + S.forcedCritBonus) -- % bonus only (not a real crit)
 		end
 
-		-- single, correct hit application
-		applyDamage(target, dmgBase, Color3.fromRGB(255,235,130), true, {
-			forceCrit    = forceCrit,
-			critBonusMul = critBonusMul,
-		})
+		local from = hrp.Position + Vector3.new(0, 2, 0)
+		local dir  = (p - from).Unit
+		local bolt = Instance.new("Part")
+		bolt.Size = Vector3.new(0.25, 0.25, 1.2)
+		bolt.Anchored, bolt.CanCollide = true, false
+		bolt.Color = Color3.fromRGB(240,240,240)
+		bolt.CFrame = CFrame.lookAt(from, p)
+		bolt.Parent = workspace
 
-		-- Mace: stun on hit with rank chance, per-target ICD; miniboss/boss half duration
-		if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
-			local now = time()
-			local last = lastStunAt[target] or 0
-			if (now - last) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
-				lastStunAt[target] = now
-				local dur = S.stunDur or 0.60
-				local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
-				if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur = dur * 0.5 end
-				local h2 = target:FindFirstChildOfClass("Humanoid")
-				if h2 then
-					local pre = h2.WalkSpeed
-					h2.WalkSpeed = 0
-					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
-					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
-					task.delay(dur, function()
-						if h2 and h2.Parent then h2.WalkSpeed = pre end
-					end)
-				end
+		local speed = 110
+		local flight = dist / speed
+		task.spawn(function()
+			local t0 = time()
+			while time() - t0 < flight do
+				bolt.CFrame = bolt.CFrame + dir * speed * task.wait()
 			end
-		end
+			bolt:Destroy()
+			-- IMPORTANT: allowCrit=false so we never add normal crit *and* mastery
+			applyDamage(target, dmg, Color3.fromRGB(255,235,130), false, { displayCrit = surge })
+		end)
 		return true
 	end
+
+	-- ===== Sword/Mace: true melee =====
+	if dist > ATTACK_RANGE then return false end
+
+	local last = hero:GetAttribute("__lastSwing") or 0
+	if time() - last < SWING_COOLDOWN then
+		return true -- we are in range; keep “holding” rather than moving
+	end
+	hero:SetAttribute("__lastSwing", time())
+
+	faceTowards(hrp, p)
+	hero:SetAttribute("MeleeTick", os.clock())
+
+	local dmgBase = MELEE_DAMAGE
+	applyDamage(target, dmgBase, Color3.fromRGB(255,235,130), true)
+
+	-- Mace stun (unchanged)
+	if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
+		local now = time()
+		local lastS = lastStunAt[target] or 0
+		if (now - lastS) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
+			lastStunAt[target] = now
+			local dur = S.stunDur or 0.60
+			local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
+			if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur *= 0.5 end
+			local h2 = target:FindFirstChildOfClass("Humanoid")
+			if h2 then
+				local pre = h2.WalkSpeed; h2.WalkSpeed = 0
+				local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+				if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
+				task.delay(dur, function() if h2 and h2.Parent then h2.WalkSpeed = pre end end)
+			end
+		end
+	end
+	return true
+end
+
 
 	-- lifetime
 	local conns = {}
@@ -684,6 +719,10 @@ function Brain.attach(hero: Model)
 	end))
 
 	-- main loop
+	local FIREBOLT_RANGE = T.FIREBOLT_RANGE or T.FIRE_RANGE
+	-- ADD THIS: sanity check that your tuning values are being read
+	print(("[Dbg] Ranges | bowBasic=%s | firebolt=%s | fallback FIRE_RANGE=%s")
+		:format(tostring(T.BOW_BASIC_RANGE), tostring(FIREBOLT_RANGE), tostring(T.FIRE_RANGE)))
 	task.spawn(function()
 		while running and hero.Parent do
 			task.wait(REPATH_EVERY)
@@ -723,7 +762,7 @@ function Brain.attach(hero: Model)
 
 				if canUseSkill("firebolt") then
 					local p = targetPos(target)
-					if p and (p - hrp.Position).Magnitude <= FIRE_RANGE then
+					if p and (p - hrp.Position).Magnitude <= FIREBOLT_RANGE then
 						cast_firebolt(target, getSkillLevel("firebolt"))
 						startCooldowns("firebolt")
 						continue
@@ -734,7 +773,14 @@ function Brain.attach(hero: Model)
 				if not tryMelee(target) then
 					local p = targetPos(target)
 					if p then
-						local stopAt = math.max(ATTACK_RANGE - 1.0, 2.0)
+						local stopAt
+						if styleId == "Bow" then
+							local basicRange = T.BOW_BASIC_RANGE or T.FIRE_RANGE or 90
+							-- Stand a bit INSIDE basic range so shooting starts immediately
+							stopAt = math.max(2, math.min(basicRange - 2, 16))
+						else
+							stopAt = math.max(ATTACK_RANGE - 1.0, 2.0)
+						end
 						hum:MoveTo(softStopPoint(hrp.Position, p, stopAt))
 					end
 				end
