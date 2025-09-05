@@ -191,7 +191,7 @@ function Brain.attach(hero: Model)
 
 		-- mastery bonuses for this style
 		local plr = getOwnerPlayer()
-		local xp  = tonumber(plr and plr:GetAttribute("MasteryXP_"..styleId)) or 0
+		local xp  = tonumber(plr and plr:GetAttribute("StyleXP_"..styleId)) or 0
 		B = Mastery.bonuses(styleId, xp)
 
 		-- Max HP mul
@@ -219,9 +219,7 @@ function Brain.attach(hero: Model)
 		end
 		chance = hero:GetAttribute("CritChance") or chance
 		mult   = hero:GetAttribute("CritMult")   or mult
-		if styleId == "Bow" and B and B.critDmgMul then
-			mult = mult * B.critDmgMul
-		end
+		-- NOTE: Do NOT fold Bow mastery critDmgMul here: that would affect skills too.
 		return math.clamp(chance, 0, 1), math.max(1, mult)
 	end
 
@@ -404,8 +402,6 @@ function Brain.attach(hero: Model)
 		return (now >= (skillCDEnds[id] or 0)) and (now >= gcdEnds) and isEquipped(id)
 	end
 
-	private_guardReadyAt = 0 -- per-hero guard timer (SwordShield)
-
 	local function startCooldowns(id: string)
 		id = canon(id); if not id then return end
 		local now = time()
@@ -413,86 +409,37 @@ function Brain.attach(hero: Model)
 		gcdEnds = now + GCD_SECONDS
 	end
 
-	-- ===== damage intake (Shield + Sword&Shield DR/Guard) =====
+	-- ===== damage intake (UI refresh only; DR/Guard handled in Combat) =====
 	do
-		local reenter = false
-		local lastHealth = hum.Health
-
-		-- arm guard a couple seconds after wave starts
-		local function armGuard(initialDelay)
-			private_guardReadyAt = time() + (initialDelay or 2.0)
-		end
-		armGuard(2.0)
-
-		hum.HealthChanged:Connect(function(newHealth)
-			if reenter then return end
-			local old = lastHealth; lastHealth = newHealth
-			if newHealth >= old then
-				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
-				return
-			end
-
-			local incoming = old - newHealth
-			local refund = 0
-
-			-- Sword&Shield: mastery DR + Guard (next hit DR on CD)
-			if styleId == "SwordShield" then
-				if B and B.drFlat and B.drFlat > 0 then
-					refund += incoming * B.drFlat
-				end
-				if time() >= private_guardReadyAt then
-					local cut = incoming * (S.guardDR or 0.10)
-					refund += cut
-					private_guardReadyAt = time() + (S.guardCD or 12.0)
-					-- optional: show a small blue "GUARD" number
-					local pp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
-					if pp and cut > 0.5 then
-						DamageNumbers.pop(pp, "GUARD", Color3.fromRGB(120,180,255))
-					end
-				end
-			end
-
-			-- Shield absorption (after DR so we don't over-refund)
-			local s  = hero:GetAttribute("ShieldHP") or 0
-			if s > 0 then
-				local remaining = math.max(0, incoming - refund)
-				local absorbed  = math.min(remaining, s)
-				if absorbed > 0 then
-					hero:SetAttribute("ShieldHP", s - absorbed)
-					refund += absorbed
-					local pp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
-					if pp then
-						DamageNumbers.pop(pp, math.floor(absorbed+0.5), Color3.fromRGB(90,180,255))
-					end
-					if (s - absorbed) <= 0 then
-						hero:SetAttribute("ShieldExpireAt", 0)
-						if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
-					end
-				end
-			end
-
-			if refund > 0 then
-				reenter = true
-				hum.Health = math.min(hum.MaxHealth, hum.Health + refund)
-				reenter = false
-				lastHealth = hum.Health
-			end
-
+		-- Keep the bars in sync with health changes (no refunds here)
+		hum.HealthChanged:Connect(function(_newHealth)
 			refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
 		end)
 
-		hero:GetAttributeChangedSignal("BarsVisible"):Connect(function()
-			if hero:GetAttribute("BarsVisible") == 1 then
-				armGuard(2.0)
-			end
-		end)
-
-		hero.AttributeChanged:Connect(function(a)
-			if a == "ShieldHP" or a == "ShieldMax" then
+		-- React to shield attribute changes:
+		-- - refresh the subbar
+		-- - if ShieldHP hits 0 early, kill the barrier VFX and clear timers
+		hero.AttributeChanged:Connect(function(attrName)
+			if attrName == "ShieldHP" or attrName == "ShieldMax" then
 				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
+
+				if attrName == "ShieldHP" then
+					local s  = hero:GetAttribute("ShieldHP") or 0
+					local t  = hero:GetAttribute("ShieldExpireAt") or 0
+					-- If shield is broken before time expires, clean up right away
+					if s <= 0 and t > 0 then
+						hero:SetAttribute("ShieldMax", 0)
+						hero:SetAttribute("ShieldExpireAt", 0)
+						-- optional: kill effect bubble immediately
+						if RE_VFX then
+							RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero })
+						end
+					end
+				end
 			end
 		end)
 	end
+
 
 	-- ===== attacks =====
 
@@ -659,21 +606,27 @@ function Brain.attach(hero: Model)
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
 
-		-- Bow: every Nth basic is forced crit, with extra bonus multiplier
-		local forceCrit, critBonusMul = false, nil
+		-- Bow: every Nth BASIC is a forced crit (+bonus damage on that swing),
+		-- and mastery crit-dmg mul applies to basics only.
+		local dmgBase = MELEE_DAMAGE
+		local forceCrit    = false
+		local critBonusMul = 1
+
 		if styleId == "Bow" and (S.forcedCritNth and S.forcedCritNth > 0) then
 			bowSwingCount += 1
 			if (bowSwingCount % S.forcedCritNth) == 0 then
 				forceCrit = true
-				if S.forcedCritBonus and S.forcedCritBonus ~= 0 then
-					critBonusMul = 1.0 + S.forcedCritBonus
+				dmgBase = dmgBase * (1 + (S.forcedCritBonus or 0))
+				if B and B.critDmgMul and B.critDmgMul > 1 then
+					critBonusMul = B.critDmgMul
 				end
 			end
 		end
 
-		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true, {
-			forceCrit     = forceCrit,
-			critBonusMul  = critBonusMul,
+		-- single, correct hit application
+		applyDamage(target, dmgBase, Color3.fromRGB(255,235,130), true, {
+			forceCrit    = forceCrit,
+			critBonusMul = critBonusMul,
 		})
 
 		-- Mace: stun on hit with rank chance, per-target ICD; miniboss/boss half duration

@@ -122,7 +122,7 @@ local function outgoingFromStyle(attacker: Player, baseDamage: number, isBasic: 
 				flags.critDmgMul = S.critMul or 1
 			end
 		-- Mace: BASIC hits can stun (chance from mastery)
-		elseif S.id == "Mace" and math.random() < (S.stunChance or 0) then
+		elseif S.id == "Mace" and isBasic and math.random() < (S.stunChance or 0) then
 			flags.stun = true
 			flags.stunDur = S.stunDur or 0.6
 		end
@@ -175,7 +175,14 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		local hum = model:FindFirstChildOfClass("Humanoid")
 		if hum and hum.Health > 0 then
 			-- incoming reductions (only apply if it's a Player character)
+			-- resolve player owner for "Hero" models too
 			local targetPlayer = Players:GetPlayerFromCharacter(model)
+			if not targetPlayer and model and model:IsA("Model") then
+				local ownerId = tonumber(model:GetAttribute("OwnerUserId")) or 0
+				if ownerId > 0 then
+					targetPlayer = Players:GetPlayerByUserId(ownerId)
+				end
+			end
 			dmg = incomingFromStyle(targetPlayer, dmg)
 
 			-- shield absorb (attributes on target)
