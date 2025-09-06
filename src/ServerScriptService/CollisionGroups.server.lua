@@ -1,8 +1,9 @@
+-- ServerScriptService/CollisionGroups.server.lua (modern API)
 local PhysicsService = game:GetService("PhysicsService")
-local Players = game:GetService("Players")
+local Players        = game:GetService("Players")
 
 local function ensureGroup(name)
-	pcall(function() PhysicsService:CreateCollisionGroup(name) end)
+	pcall(function() PhysicsService:RegisterCollisionGroup(name) end)
 end
 
 ensureGroup("Player")
@@ -10,20 +11,20 @@ ensureGroup("Hero")
 ensureGroup("Enemy")
 ensureGroup("Effects")
 
--- Collisions: player passes through everything combat-y
-PhysicsService:CollisionGroupSetCollidable("Player", "Hero",   false)
-PhysicsService:CollisionGroupSetCollidable("Player", "Enemy",  false)
-PhysicsService:CollisionGroupSetCollidable("Player", "Effects",false)
+-- Collisions: players pass through combat stuff
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Hero",    false) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Enemy",   false) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Effects", false) end)
 
--- Combat collides with itself
-PhysicsService:CollisionGroupSetCollidable("Hero",  "Enemy",   true)
-PhysicsService:CollisionGroupSetCollidable("Hero",  "Hero",    true)
-PhysicsService:CollisionGroupSetCollidable("Enemy", "Enemy",   true)
+-- Combat collides with itself (tweak if you want heroes to pass through each other)
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Enemy",  true) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Hero",   true) end)
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Enemy","Enemy", true) end)
 
-local function setGroupModel(model, group)
+local function setGroupModel(model: Instance, group: string)
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") then
-			PhysicsService:SetPartCollisionGroup(d, group)
+			d.CollisionGroup = group -- <-- modern way
 		end
 	end
 end

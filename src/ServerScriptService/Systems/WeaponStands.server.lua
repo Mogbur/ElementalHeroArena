@@ -189,6 +189,14 @@ end
 
 local function onStandTriggered(stand: Model, player: Player)
 	local plot = findPlot(stand); if not plot then return end
+	-- block changes while waves are running
+	if plot:GetAttribute("CombatLocked") == false then
+		return
+	end
+	-- block unless hero is truly parked at idle anchor
+	if plot:GetAttribute("AtIdle") ~= true then
+		return
+	end
 	local ownerId = plot:GetAttribute("OwnerUserId") or 0
 	if ownerId ~= 0 and player.UserId ~= ownerId then
 		return -- only owner can change their hero
@@ -257,8 +265,23 @@ local function wireStand(stand: Model)
 		prompt.ActionText = "Equip Mace"
 	end
 
-	prompt.Triggered:Connect(function(plr) onStandTriggered(stand, plr) end)
+	-- LOCK WHILE FIGHTING + REQUIRE IDLE: enable prompt only when NOT fighting AND AtIdle=true
+	local plot = findPlot(stand)
 
+	local function syncPrompt()
+		local fighting = plot and (plot:GetAttribute("CombatLocked") == false)
+		local atIdle   = plot and (plot:GetAttribute("AtIdle") == true)
+		-- Enabled only when hero is parked at idle and not fighting
+		prompt.Enabled = (not fighting) and atIdle
+	end
+
+	syncPrompt()
+	if plot then
+		plot:GetAttributeChangedSignal("CombatLocked"):Connect(syncPrompt)
+		plot:GetAttributeChangedSignal("AtIdle"):Connect(syncPrompt)
+	end
+
+	prompt.Triggered:Connect(function(plr) onStandTriggered(stand, plr) end)
 	refreshStandDisplay(stand)
 end
 

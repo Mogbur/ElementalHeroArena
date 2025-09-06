@@ -369,7 +369,7 @@ local function teleportHeroToIdle(plot: Model)
 	hero:SetAttribute("ShieldHP", 0)
 	hero:SetAttribute("ShieldMax", 0)
 	hero:SetAttribute("ShieldExpireAt", 0)
-
+	plot:SetAttribute("AtIdle", true)
 	-- stand up & heal
 	if hum then
 		hum.Sit = false
@@ -596,6 +596,16 @@ local function teleportHeroTo(plot, anchorName, opts)
 			bp.AssemblyLinearVelocity  = Vector3.zero
 			bp.AssemblyAngularVelocity = Vector3.zero
 			bp.CollisionGroup = "Hero"
+		end
+	end
+
+	-- ensure only HRP collides (hero in arena)
+	local hrpOnly = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+	for _, bp in ipairs(hero:GetDescendants()) do
+		if bp:IsA("BasePart") then
+			bp.Anchored = false
+			bp.CollisionGroup = "Hero"
+			bp.CanCollide = (bp == hrpOnly)
 		end
 	end
 
@@ -1092,9 +1102,36 @@ local function runFightLoop(plot, portal, owner, opts)
 			setModelFrozen(hero, false)
 			hero:SetAttribute("BarsVisible", 1)
 			setCombatLock(plot, false)
-
+			plot:SetAttribute("AtIdle", false)
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)
-			hero:SetAttribute("InvulnUntil", os.clock() + START_INVULN_SEC)
+			-- === SPAWN GUARD (prevents instant zeroing for a brief window) ===
+			local GUARD_SEC = 0.60
+			hero:SetAttribute("InvulnUntil", os.clock() + GUARD_SEC)      -- already used by Combat.ApplyDamage
+			hero:SetAttribute("SpawnGuardUntil", os.clock() + GUARD_SEC)  -- for our health guard + UI
+
+			local hum2 = hero:FindFirstChildOfClass("Humanoid")
+			if hum2 then
+				local last = hum2.Health
+				local con; con = hum2.HealthChanged:Connect(function(new)
+					if os.clock() <= (hero:GetAttribute("SpawnGuardUntil") or 0) and new < last then
+						hum2.Health = last
+						warn(("[SpawnGuard] prevented %.1f damage at wave start (new=%.1f)"):format(last - new, new))
+						local lastHit = hero:GetAttribute("LastHitBy")
+						if lastHit and lastHit ~= 0 then
+							warn("[SpawnGuard] LastHitBy userId=", lastHit)
+							hero:SetAttribute("LastHitBy", 0)
+						end
+					else
+						last = new
+					end
+				end)
+				task.delay(GUARD_SEC + 0.1, function()
+					if con then con:Disconnect() end
+					hero:SetAttribute("SpawnGuardUntil", 0)
+				end)
+			end
+			-- === end SPAWN GUARD ===
+
 			cleanupLeftovers_local()
 
 			-- enable/disable 2H IK per current weapon (for normal waves)
@@ -1122,6 +1159,7 @@ local function runFightLoop(plot, portal, owner, opts)
 				local cpStart = ((startWave - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
+				setCombatLock(plot, true)
 				teleportHeroToIdle(plot)          -- <— new one-liner
 				cleanupLeftovers_local()
 				freezeHeroAtIdle(plot)
@@ -1133,7 +1171,7 @@ local function runFightLoop(plot, portal, owner, opts)
 
 		rewardAndAdvance(plot)
 		if plr then RE_WaveText:FireClient(plr, {kind="result", result="Victory", wave=startWave}) end
-		setCombatLock(plot, true)
+		-- (we REMOVE the immediate setCombatLock(true) here)
 
 		local ttl = time() - t0
 		if hum then
@@ -1148,21 +1186,37 @@ local function runFightLoop(plot, portal, owner, opts)
 		if hum and hum.Health > 0 then
 			postWaveHeal(hero)
 		end
-		setCombatLock(plot, true)
-		teleportHeroToIdle(plot)
-		freezeHeroAtIdle(plot)
-		task.defer(pinFrozenHeroToIdleGround, plot)
-		cleanupLeftovers_local()
 
-		local nextWave = plot:GetAttribute("CurrentWave") or 1
-		if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
-			Forge:SpawnShrine(plot)
+		-- 👇 NEW: split behavior based on AutoChain
+		if autoChain then
+			-- Continuous run: stay in arena and KEEP stands disabled.
+			-- CombatLocked false => stands disabled by our stand logic.
+			setCombatLock(plot, false)
+			cleanupLeftovers_local()
+
+			-- No idle teleport + no freeze between waves
+			-- (Optionally: brief pause so the heal text is readable)
+			task.wait(BETWEEN_WAVES_DELAY)
 		else
-			Forge:DespawnShrine(plot)
-		end
+			-- Manual / totem-driven flow: return to idle and allow stands.
+			setCombatLock(plot, true)
+			teleportHeroToIdle(plot)
+			freezeHeroAtIdle(plot)
+			-- mark idle state for stands/UI
+			plot:SetAttribute("AtIdle", true)
+			task.defer(pinFrozenHeroToIdleGround, plot)
+			cleanupLeftovers_local()
 
-		if not autoChain then break end
-		task.wait(BETWEEN_WAVES_DELAY)
+			local nextWave = plot:GetAttribute("CurrentWave") or 1
+			if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
+				Forge:SpawnShrine(plot)
+			else
+				Forge:DespawnShrine(plot)
+			end
+
+			-- Exit unless player starts again
+			break
+		end
 	end
 end
 
@@ -1195,7 +1249,37 @@ local function startWaveCountdown(plot, portal, owner)
 	setModelFrozen(h, false)
 	h:SetAttribute("BarsVisible", 1)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
-	h:SetAttribute("InvulnUntil", os.clock() + START_INVULN_SEC)
+	plot:SetAttribute("AtIdle", false)
+	-- === SPAWN GUARD (prevents instant zeroing for a brief window) ===
+	local GUARD_SEC = 0.60
+	h:SetAttribute("InvulnUntil", os.clock() + GUARD_SEC)     -- already there; keep it
+	h:SetAttribute("SpawnGuardUntil", os.clock() + GUARD_SEC) -- for UI + guard hook
+
+	local hum = h:FindFirstChildOfClass("Humanoid")
+	if hum then
+		local last = hum.Health
+		local con; con = hum.HealthChanged:Connect(function(new)
+			-- If anyone tries to drop Health during the guard window, immediately restore and log.
+			if os.clock() <= (h:GetAttribute("SpawnGuardUntil") or 0) and new < last then
+				hum.Health = last
+				warn(("[SpawnGuard] prevented %.1f damage at wave start (new=%.1f)"):format(last - new, new))
+				-- If it *was* Combat.ApplyDamage, LastHitBy would be set. Print + clear so we can see it.
+				local lastHit = h:GetAttribute("LastHitBy")
+				if lastHit and lastHit ~= 0 then
+					warn("[SpawnGuard] LastHitBy userId=", lastHit)
+					h:SetAttribute("LastHitBy", 0)
+				end
+			else
+				last = new
+			end
+		end)
+		task.delay(GUARD_SEC + 0.1, function()
+			if con then con:Disconnect() end
+			h:SetAttribute("SpawnGuardUntil", 0)
+		end)
+	end
+	-- === end SPAWN GUARD ===
+
 	setCombatLock(plot, true)
 	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
 
@@ -1279,14 +1363,22 @@ local function claimPlot(plot, player)
 
 	playerToPlot[player] = plot; plotToPlayer[plot] = player
 	setVacantVisual(plot, false); setSignpost(plot, player)
-	local hero = ensureHero(plot, player.UserId); if not hero then warn("No hero in plot", plot.Name) end
-	teleportHeroTo(plot, HERO_IDLE_ANCHOR, {fullHeal=true})
+	local hero = ensureHero(plot, player.UserId)
+	if not hero then
+		warn("No hero in plot", plot.Name)
+		return
+	end
+	teleportHeroToIdle(plot)
 	freezeHeroAtIdle(plot)
 	task.defer(pinFrozenHeroToIdleGround, plot)
+	-- optional: full heal
+	local hum = hero:FindFirstChildOfClass("Humanoid")
+	if hum then hum.Health = hum.MaxHealth end
+	setCombatLock(plot, true)
 	if not createTotemPrompt(plot, player) then
 		createPortalPrompt(plot, player)
 	end
-
+	
 	teleportPlayerToGate(player, plot)
 	print(("[PlotService] Claimed %s for %s"):format(plot.Name, player.Name))
 end

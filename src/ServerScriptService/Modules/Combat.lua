@@ -158,14 +158,25 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
 	
-	-- >>> INVULN WINDOW (hero at wave start etc.)
+	-- >>> NEW: block same-owner damage + spawn/invuln guard
 	if model then
-		local untilT = tonumber(model:GetAttribute("InvulnUntil")) or 0
-		if os.clock() < untilT then
+		local now        = os.clock()
+		local inv        = tonumber(model:GetAttribute("InvulnUntil")) or 0
+		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
+		if now < math.max(inv, spawnGuard) then
+			-- During the guard window, ignore all incoming damage.
+			return false, 0
+		end
+
+		-- Friendly-fire: don't let the same owner damage themselves (hero vs their own tickers/AOE)
+		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
+		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
+		if srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
 			return false, 0
 		end
 	end
-	-- <<<
+	-- <<< NEW
+
 
 	-- element multiplier
 	local targetElem = "Neutral"
