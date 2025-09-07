@@ -270,7 +270,7 @@ local function wireStand(stand: Model)
 
 	local function syncPrompt()
 		local fighting = plot and (plot:GetAttribute("CombatLocked") == false)
-		local atIdle   = plot and (plot:GetAttribute("AtIdle") == true)
+		local atIdle   = plot and (plot:GetAttribute("AtIdle")  ~= false)  -- nil or true => okay
 		-- Enabled only when hero is parked at idle and not fighting
 		prompt.Enabled = (not fighting) and atIdle
 	end

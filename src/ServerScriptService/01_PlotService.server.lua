@@ -193,6 +193,11 @@ local function setModelFrozen(model, on)
 			end
 		end
 	else
+		-- Pick HRP as the single collider and ensure PrimaryPart is set.
+		local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+		if hrp and not model.PrimaryPart then
+			model.PrimaryPart = hrp
+		end
 		setAnimatorEnabled(hum, true)
 		hum.PlatformStand = false
 		hum.AutoRotate    = true
@@ -214,7 +219,13 @@ local function setModelFrozen(model, on)
 				bp.AssemblyAngularVelocity = Vector3.zero
 			end
 		end
-
+		-- >>> ADDED: re-enable Align constraints after unfreeze
+		for _, d in ipairs(model:GetDescendants()) do
+			if d:IsA("AlignPosition") or d:IsA("AlignOrientation") then
+				d.Enabled = true
+			end
+		end
+		-- <<<<
 		pcall(function()
 			hum:Move(Vector3.zero, true)
 			hum:ChangeState(Enum.HumanoidStateType.Running)
@@ -410,6 +421,14 @@ local function getPlotsSorted()
 	return list
 end
 
+local function cleanupStrayHeroes()
+	for _, m in ipairs(workspace:GetChildren()) do
+		if m:IsA("Model") and m.Name == "Hero" and not m:IsDescendantOf(PLOTS_CONTAINER) then
+			m:Destroy()
+		end
+	end
+end
+
 local function ensureAttrs(plot)
 	for k, v in pairs(DEFAULT_ATTRS) do
 		if plot:GetAttribute(k) == nil then plot:SetAttribute(k, v) end
@@ -464,15 +483,44 @@ local function destroyHero(plot)
 	if h then h:Destroy() end
 end
 
+-- Anchor-only-the-root "showroom" freeze (prevents pulled-apart rigs at boot)
 local function freezeHeroAtIdle(plot)
 	local hero = getHero(plot); if not hero then return end
 	WeaponVisuals.disableTwoHandIK(hero) -- 2H off while idle
 
-	setModelFrozen(hero, true)
+	-- make sure the assembly is fully together first
+	setModelFrozen(hero, false)
+
+	local hum = hero:FindFirstChildOfClass("Humanoid")
+	local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+	if not hrp then return end
+
+	-- anchor ONLY the root; keep the rest unanchored but motionless
+	for _, bp in ipairs(hero:GetDescendants()) do
+		if bp:IsA("BasePart") then
+			bp.Anchored = (bp == hrp)
+			bp.CanCollide = (bp == hrp)
+			bp.AssemblyLinearVelocity  = Vector3.zero
+			bp.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
+	-- lock the pose
+	if hum then
+		hum.Sit = false
+		hum.PlatformStand = true
+		hum.AutoRotate = false
+		hum.WalkSpeed = 0
+		hum.JumpPower = 0
+	end
+
+	-- hide bars/shields while idle
 	hero:SetAttribute("BarsVisible", 0)
 	hero:SetAttribute("ShieldHP", 0)
 	hero:SetAttribute("ShieldMax", 0)
 	hero:SetAttribute("ShieldExpireAt", 0)
+
+	-- settle exactly on the pad
 	pinFrozenHeroToIdleGround(plot)
 	task.delay(0.05, function() if hero and hero.Parent then pinFrozenHeroToIdleGround(plot) end end)
 	task.delay(0.20, function() if hero and hero.Parent then pinFrozenHeroToIdleGround(plot) end end)
@@ -499,6 +547,20 @@ local function ensureHero(plot, ownerId)
             existing:SetAttribute("VisualsHooked", 1)
         end
         WeaponVisuals.apply(existing)
+		 -- If a hero was left anchored/frozen earlier, make it a clean, single assembly again.
+        local hrp = existing:FindFirstChild("HumanoidRootPart")
+        if hrp and not existing.PrimaryPart then
+            existing.PrimaryPart = hrp
+        end
+        for _, bp in ipairs(existing:GetDescendants()) do
+            if bp:IsA("BasePart") then
+                bp.Anchored = false
+                bp.AssemblyLinearVelocity  = Vector3.zero
+                bp.AssemblyAngularVelocity = Vector3.zero
+                bp.CollisionGroup = "Hero"
+                bp.CanCollide = (bp == hrp) -- HRP only
+            end
+        end
         return existing
     end
 
@@ -1162,8 +1224,15 @@ local function runFightLoop(plot, portal, owner, opts)
 				setCombatLock(plot, true)
 				teleportHeroToIdle(plot)          -- <— new one-liner
 				cleanupLeftovers_local()
-				freezeHeroAtIdle(plot)
-				task.defer(pinFrozenHeroToIdleGround, plot)
+				-- Let Animator/WeaponVisuals finish a frame or two, then freeze cleanly.
+				task.delay(0.25, function()
+					local h = getHero(plot); if not h then return end
+					-- make sure it's a single assembly first
+					setModelFrozen(h, false)
+					teleportHeroToIdle(plot)          -- place again (now fully assembled)
+					freezeHeroAtIdle(plot)            -- anchors for the showroom pose
+					task.defer(pinFrozenHeroToIdleGround, plot)
+				end)
 				return
 			end
 			task.wait(CHECK_PERIOD)
@@ -1358,6 +1427,7 @@ end
 
 local function claimPlot(plot, player)
 	ensureAttrs(plot)
+	cleanupStrayHeroes()
 	plot:SetAttribute("OwnerUserId", player.UserId)
 	plot:SetAttribute("CurrentWave", plot:GetAttribute("CurrentWave") or 1)
 
@@ -1368,9 +1438,16 @@ local function claimPlot(plot, player)
 		warn("No hero in plot", plot.Name)
 		return
 	end
-	teleportHeroToIdle(plot)
-	freezeHeroAtIdle(plot)
-	task.defer(pinFrozenHeroToIdleGround, plot)
+	teleportHeroToIdle(plot)                 -- park + AtIdle=true
+	-- Let Animator/WeaponVisuals finish a frame or two, then freeze cleanly.
+	task.delay(0.25, function()
+		local h = getHero(plot); if not h then return end
+		-- make sure it's a single assembly first
+		setModelFrozen(h, false)
+		teleportHeroToIdle(plot)            -- place again (now fully assembled)
+		freezeHeroAtIdle(plot)              -- showroom pose
+		task.defer(pinFrozenHeroToIdleGround, plot)
+	end)
 	-- optional: full heal
 	local hum = hero:FindFirstChildOfClass("Humanoid")
 	if hum then hum.Health = hum.MaxHealth end
@@ -1378,7 +1455,19 @@ local function claimPlot(plot, player)
 	if not createTotemPrompt(plot, player) then
 		createPortalPrompt(plot, player)
 	end
-	
+
+	-- NEW: re-assert idle & do a hard settle a tick later
+	plot:SetAttribute("AtIdle", true)
+	task.delay(0.05, function()
+		local h = getHero(plot)
+		if h then
+			thawModelHard(h)          -- clears any half-frozen state
+			teleportHeroToIdle(plot)  -- place using the safe ground probe
+			freezeHeroAtIdle(plot)    -- freeze again, now that everything’s settled
+			task.defer(pinFrozenHeroToIdleGround, plot)
+		end
+	end)
+
 	teleportPlayerToGate(player, plot)
 	print(("[PlotService] Claimed %s for %s"):format(plot.Name, player.Name))
 end

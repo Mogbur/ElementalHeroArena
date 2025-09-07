@@ -513,7 +513,6 @@ local function buildTextGui(textPart)
 		return "✨"
 	end
 
-
 	-- === Element border (animated stroke) ===
 	local border = Instance.new("Frame")
 	border.Name = "ElementBorder"
@@ -627,6 +626,21 @@ local function buildTextGui(textPart)
 	lockedOverlay.Visible = false
 	lockedOverlay.Parent = root
 
+	-- keep the big overlay in sync with plot state
+	local function syncCombatLockOverlay()
+		local plot = myPlot()
+		if not plot then
+			lockedOverlay.Visible = true
+			lockedOverlay.Text = "Locked"
+			return
+		end
+		-- server meaning: CombatLocked == false -> waves running
+		local fighting = (plot:GetAttribute("CombatLocked") == false)
+		local atIdle   = (plot:GetAttribute("AtIdle") == true)
+		-- show overlay while fighting or before we've parked at the idle pad
+		lockedOverlay.Visible = fighting or (not atIdle)
+	end
+
 	-- updater
 	local function fmtDelta(v, nv)
 		return (nv and nv ~= v) and ("%s  ►  %s"):format(v, nv) or tostring(v)
@@ -703,7 +717,7 @@ local function buildTextGui(textPart)
 
 		-- combat lock + button state
 		local plot = myPlot()
-		lockedOverlay.Visible = (plot and plot:GetAttribute("CombatLocked")) or false
+		syncCombatLockOverlay()
 		if lv >= MAX_LEVEL then
 			upgrade.Text = "Max level"
 			upgrade.BackgroundColor3 = Color3.fromRGB(90,90,90)
@@ -727,7 +741,13 @@ local function buildTextGui(textPart)
 	end)
 	task.spawn(function()
 		local plot = myPlot()
-		if plot then plot:GetAttributeChangedSignal("CombatLocked"):Connect(update) end
+		if not plot then return end
+		local function onAttrChanged()
+			syncCombatLockOverlay()
+		end
+		plot:GetAttributeChangedSignal("CombatLocked"):Connect(onAttrChanged)
+		plot:GetAttributeChangedSignal("AtIdle"):Connect(onAttrChanged)
+		onAttrChanged()
 	end)
 
 	-- hold logic
@@ -826,7 +846,9 @@ local function attachWorldButtons(boardModel, picPart)
 
 		local function step(delta)
 			local plot = myPlot()
-			if plot and plot:GetAttribute("CombatLocked") then
+			local fighting = plot and (plot:GetAttribute("CombatLocked") == false)
+			local atIdle   = plot and (plot:GetAttribute("AtIdle") == true)
+			if fighting or (not atIdle) then
 				play3D(SFX.deny, p.Position); return
 			end
 			-- ONLY affect slot #1 (active)
