@@ -87,6 +87,10 @@ local DEFAULT_ATTRS = {
 	CritMult     = 2.0,
 }
 local START_INVULN_SEC = 0.90 -- was 0.35
+
+-- Shared guard window (first spawn + between waves)
+local ARENA_SPAWN_GUARD_SEC = 0.25
+
 -- === Fight tuning ===
 local ENEMY_TTL_SEC       = 60
 local BETWEEN_SPAWN_Z     = 5.5
@@ -358,6 +362,7 @@ local function findHeroAnchor(plot)
 		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
 	end
 end
+
 -- Add to 01_PlotService.server.lua
 local function teleportHeroToIdle(plot: Model)
 	local hero = plot and plot:FindFirstChild("Hero", true)
@@ -419,6 +424,23 @@ local function getPlotsSorted()
 		return an:lower() < bn:lower()
 	end)
 	return list
+end
+
+local function normalizeHeroCollision(hero: Model)
+	local hrp = hero and (hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart)
+	if not (hero and hrp and hrp:IsA("BasePart")) then return end
+
+	-- Ensure all parts are in the "Hero" group and only HRP can collide (like your idle normalize)
+	for _, bp in ipairs(hero:GetDescendants()) do
+		if bp:IsA("BasePart") then
+			bp.CollisionGroup = "Hero"
+			bp.Anchored = false
+			-- HRP collides later, everyone else stays non-collide
+			bp.CanCollide = false
+			bp.AssemblyLinearVelocity  = Vector3.zero
+			bp.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
 end
 
 local function cleanupStrayHeroes()
@@ -1166,32 +1188,54 @@ local function runFightLoop(plot, portal, owner, opts)
 			setCombatLock(plot, false)
 			plot:SetAttribute("AtIdle", false)
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)
-			-- === SPAWN GUARD (prevents instant zeroing for a brief window) ===
-			local GUARD_SEC = 0.60
-			hero:SetAttribute("InvulnUntil", os.clock() + GUARD_SEC)      -- already used by Combat.ApplyDamage
-			hero:SetAttribute("SpawnGuardUntil", os.clock() + GUARD_SEC)  -- for our health guard + UI
 
-			local hum2 = hero:FindFirstChildOfClass("Humanoid")
-			if hum2 then
-				local last = hum2.Health
-				local con; con = hum2.HealthChanged:Connect(function(new)
-					if os.clock() <= (hero:GetAttribute("SpawnGuardUntil") or 0) and new < last then
-						hum2.Health = last
-						warn(("[SpawnGuard] prevented %.1f damage at wave start (new=%.1f)"):format(last - new, new))
-						local lastHit = hero:GetAttribute("LastHitBy")
-						if lastHit and lastHit ~= 0 then
-							warn("[SpawnGuard] LastHitBy userId=", lastHit)
-							hero:SetAttribute("LastHitBy", 0)
-						end
-					else
-						last = new
+			-- === SPAWN GUARD (short + deterministic) ===
+			local now = os.clock()
+
+			-- time-based attributes (also honored in Combat.lua)
+			hero:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)
+			hero:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
+
+			-- mute all ApplyDamage until ground contact or timeout
+			hero:SetAttribute("DamageMute", 1)
+
+			-- normalize collision every round (prevents carry-over weirdness)
+			normalizeHeroCollision(hero)
+
+			-- keep HRP non-colliding briefly to avoid spawn-brick edges
+			local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+			if hrp and hrp:IsA("BasePart") then
+				hrp.CanCollide = false
+				task.delay(0.30, function()
+					if hrp and hrp.Parent then
+						hrp.CanCollide = true
 					end
 				end)
-				task.delay(GUARD_SEC + 0.1, function()
-					if con then con:Disconnect() end
-					hero:SetAttribute("SpawnGuardUntil", 0)
+			end
+
+			-- release as soon as HRP touches arena ground, or after timeout
+			local released = false
+			local function releaseMute()
+				if released or not hero or not hero.Parent then return end
+				released = true
+				hero:SetAttribute("DamageMute", 0)
+				hero:SetAttribute("SpawnGuardUntil", 0)
+				hero:SetAttribute("InvulnUntil", 0)
+				if hrp and hrp.Parent then hrp.CanCollide = true end
+			end
+
+			if hrp then
+				hrp.CanTouch = true
+				local con; con = hrp.Touched:Connect(function(hit)
+					if not hit or hit:IsDescendantOf(hero) then return end
+					local n = string.lower(hit.Name)
+					if n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
+						if con then con:Disconnect() end
+						releaseMute()
+					end
 				end)
 			end
+			task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
 			-- === end SPAWN GUARD ===
 
 			cleanupLeftovers_local()
@@ -1315,43 +1359,57 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
+	h:SetAttribute("LastHitBy", 0)
+	local hum = h:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.BreakJointsOnDeath = false
+		hum.Health = hum.MaxHealth
+	end
 	setModelFrozen(h, false)
 	h:SetAttribute("BarsVisible", 1)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
 	plot:SetAttribute("AtIdle", false)
-	-- === SPAWN GUARD (prevents instant zeroing for a brief window) ===
-	local GUARD_SEC = 0.60
-	h:SetAttribute("InvulnUntil", os.clock() + GUARD_SEC)     -- already there; keep it
-	h:SetAttribute("SpawnGuardUntil", os.clock() + GUARD_SEC) -- for UI + guard hook
 
-	local hum = h:FindFirstChildOfClass("Humanoid")
-	if hum then
-		local last = hum.Health
-		local con; con = hum.HealthChanged:Connect(function(new)
-			-- If anyone tries to drop Health during the guard window, immediately restore and log.
-			if os.clock() <= (h:GetAttribute("SpawnGuardUntil") or 0) and new < last then
-				hum.Health = last
-				warn(("[SpawnGuard] prevented %.1f damage at wave start (new=%.1f)"):format(last - new, new))
-				-- If it *was* Combat.ApplyDamage, LastHitBy would be set. Print + clear so we can see it.
-				local lastHit = h:GetAttribute("LastHitBy")
-				if lastHit and lastHit ~= 0 then
-					warn("[SpawnGuard] LastHitBy userId=", lastHit)
-					h:SetAttribute("LastHitBy", 0)
-				end
-			else
-				last = new
+	-- === SPAWN GUARD (short + deterministic; same as loop) ===
+	local now = os.clock()
+	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)
+	h:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
+	h:SetAttribute("DamageMute", 1)
+
+	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
+	if hrp and hrp:IsA("BasePart") then
+		hrp.CanCollide = false
+		hrp.CanTouch = true
+		task.delay(0.30, function()
+			if hrp and hrp.Parent then
+				hrp.CanCollide = true
 			end
 		end)
-		task.delay(GUARD_SEC + 0.1, function()
-			if con then con:Disconnect() end
-			h:SetAttribute("SpawnGuardUntil", 0)
+	end
+	local released = false
+	local function releaseMute()
+		if released or not h or not h.Parent then return end
+		released = true
+		h:SetAttribute("DamageMute", 0)
+		h:SetAttribute("SpawnGuardUntil", 0)
+		h:SetAttribute("InvulnUntil", 0)
+		if hrp and hrp.Parent then hrp.CanCollide = true end
+	end
+	if hrp then
+		local con; con = hrp.Touched:Connect(function(other)
+			if not other or other:IsDescendantOf(h) then return end
+			local n = string.lower(other.Name)
+			if n:find("sand") or n:find("arena") or n:find("ground") or other:IsA("Terrain") then
+				if con then con:Disconnect() end
+				releaseMute()
+			end
 		end)
 	end
+	task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
 	-- === end SPAWN GUARD ===
 
 	setCombatLock(plot, true)
 	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
-
 
 	-- enable/disable 2H IK for the first wave (preSpawned path)
 	do
@@ -1365,6 +1423,7 @@ local function startWaveCountdown(plot, portal, owner)
 
 	setCombatLock(plot, false)
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="wave", wave=waveIdx}) end
+	cleanupLeftovers(plot)
 	spawnWave(plot, portal)
 	setCombatLock(plot, false)
 
@@ -1399,6 +1458,7 @@ local function createTotemPrompt(plot, owner)
 		lastTriggered[plot] = now
 
 		fightBusy[plot] = true
+		cleanupLeftovers(plot)
 		local portal = getAnchor(plot, PORTAL_ANCHOR) or plot.PrimaryPart or totem.gem
 		startWaveCountdown(plot, portal, owner)
 		cleanupLeftovers(plot)

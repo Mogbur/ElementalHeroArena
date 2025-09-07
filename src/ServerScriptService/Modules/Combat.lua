@@ -157,25 +157,30 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
-	
-	-- >>> NEW: block same-owner damage + spawn/invuln guard
+
+	-- >>> spawn guard + damage mute + friendly-fire
 	if model then
+		-- Hard mute set by PlotService while the hero is landing.
+		if tonumber(model:GetAttribute("DamageMute")) == 1 then
+			return false, 0
+		end
+
+		-- Short time-based guard from PlotService.
 		local now        = os.clock()
 		local inv        = tonumber(model:GetAttribute("InvulnUntil")) or 0
 		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
 		if now < math.max(inv, spawnGuard) then
-			-- During the guard window, ignore all incoming damage.
 			return false, 0
 		end
 
-		-- Friendly-fire: don't let the same owner damage themselves (hero vs their own tickers/AOE)
+		-- Friendly-fire: same owner can't damage their own hero.
 		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
 		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
 		if srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
 			return false, 0
 		end
 	end
-	-- <<< NEW
+	-- <<< spawn guard + damage mute + friendly-fire
 
 
 	-- element multiplier
