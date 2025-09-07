@@ -28,6 +28,11 @@ local Tuning      = require(ReplicatedStorage.Modules.SkillTuning)
 local RS      = ReplicatedStorage
 local Remotes = RS:WaitForChild("Remotes")
 local RE_DMG  = Remotes:WaitForChild("DamageNumbers")
+local SSS = game:GetService("ServerScriptService")
+local Combat do
+    local ok, mod = pcall(function() return require(SSS.RojoServer.Modules.Combat) end)
+    Combat = ok and mod or require(SSS.Modules.Combat)
+end
 
 -- Optional Combat module
 local okCombat, Combat = pcall(function()

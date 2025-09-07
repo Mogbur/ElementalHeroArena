@@ -7,8 +7,16 @@ local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local PLOTS_CONTAINER = workspace:WaitForChild("Plots")
 local WeaponsFolder   = ReplicatedStorage:WaitForChild("Weapons")
 local SSS = game:GetService("ServerScriptService")
-local WeaponVisuals = require(SSS.RojoServer.Modules.WeaponVisuals)
-
+local WeaponVisuals do
+    local ok, mod = pcall(function()
+        return require(SSS.RojoServer.Modules.WeaponVisuals)
+    end)
+    if ok and mod then
+        WeaponVisuals = mod
+    else
+        WeaponVisuals = require(SSS:WaitForChild("Modules"):WaitForChild("WeaponVisuals"))
+    end
+end
 -- bring WeaponStyles so we can apply HP/ATK/SPD multipliers
 local WeaponStyles = require(ReplicatedStorage.Modules.WeaponStyles)
 
@@ -236,49 +244,79 @@ local function isWeaponStandModel(m: Instance): boolean
 end
 
 local function wireStand(stand: Model)
-	-- must be under workspace.Plots (ignore shops)
 	if not within(stand, PLOTS_CONTAINER) then return end
 
 	local root = stand:FindFirstChild("StandRoot")
-	if not (root and root:IsA("BasePart")) then
-		-- Quietly ignore non-stand models; no spammy warns.
-		return
-	end
+	if not (root and root:IsA("BasePart")) then return end
 	stand.PrimaryPart = root
 
 	local prompt = stand:FindFirstChildOfClass("ProximityPrompt")
 	if not prompt then
 		prompt = Instance.new("ProximityPrompt")
+		prompt.Name = "WeaponStandPrompt"
 		prompt.MaxActivationDistance = 6
 		prompt.HoldDuration = 0
 		prompt.RequiresLineOfSight = false
-		prompt.Parent = root -- attach to the root so UI hovers near the stand base
+		prompt.Enabled = false   -- start disabled; we’ll flip it on in syncPrompt()
+		prompt.Parent = root
 	end
 
 	local style = styleFromStandName(stand.Name)
 	prompt.ObjectText = "Weapon Stand"
-	if style == "SwordShield" then
-		prompt.ActionText = "Equip Sword & Shield"
-	elseif style == "Bow" then
-		prompt.ActionText = "Equip Bow"
-	else
-		prompt.ActionText = "Equip Mace"
-	end
+	prompt.ActionText = (style == "SwordShield") and "Equip Sword & Shield"
+		or (style == "Bow" and "Equip Bow")
+		or "Equip Mace"
 
-	-- LOCK WHILE FIGHTING + REQUIRE IDLE: enable prompt only when NOT fighting AND AtIdle=true
+	-- ✅ compute once, capture it — DO NOT call findPlot(model)
 	local plot = findPlot(stand)
 
+	-- inside wireStand()
+	-- do NOT compute plot once; always recompute inside sync
 	local function syncPrompt()
+		if not prompt or not prompt.Parent then return end
+		local plot = findPlot(stand)
+
+		-- Allow only when truly idle and not fighting
+		local atIdle   = plot and (plot:GetAttribute("AtIdle") == true)
 		local fighting = plot and (plot:GetAttribute("CombatLocked") == false)
-		local atIdle   = plot and (plot:GetAttribute("AtIdle")  ~= false)  -- nil or true => okay
-		-- Enabled only when hero is parked at idle and not fighting
-		prompt.Enabled = (not fighting) and atIdle
+		prompt.Enabled = (atIdle == true) and (fighting ~= true)
 	end
+
+	-- Keep trying until the plot exists, then hook signals
+	local function hookWhenReady()
+		local plot = findPlot(stand)
+		if not plot then
+			-- plot attrs not created yet; try again shortly
+			task.delay(0.25, hookWhenReady)
+			return
+		end
+
+		-- optional debug
+		print(("[Stands] Wire %s | AtIdle=%s | CombatLocked=%s")
+			:format(stand:GetFullName(), tostring(plot:GetAttribute("AtIdle")), tostring(plot:GetAttribute("CombatLocked"))))
+
+		plot:GetAttributeChangedSignal("AtIdle"):Connect(syncPrompt)
+		plot:GetAttributeChangedSignal("CombatLocked"):Connect(syncPrompt)
+		syncPrompt() -- evaluate now that the attrs exist
+	end
+
+	-- start disabled; we’ll flip it on in syncPrompt()
+	prompt.Enabled = false
+	syncPrompt()      -- harmless first pass
+	hookWhenReady()   -- ensures we hook once the plot is ready
+
 
 	syncPrompt()
 	if plot then
-		plot:GetAttributeChangedSignal("CombatLocked"):Connect(syncPrompt)
-		plot:GetAttributeChangedSignal("AtIdle"):Connect(syncPrompt)
+		plot:GetAttributeChangedSignal("AtIdle"):Connect(function()
+			-- (optional) more debug
+			-- print("[Stands] AtIdle ->", plot:GetAttribute("AtIdle"))
+			syncPrompt()
+		end)
+		plot:GetAttributeChangedSignal("CombatLocked"):Connect(function()
+			-- print("[Stands] CombatLocked ->", plot:GetAttribute("CombatLocked"))
+			syncPrompt()
+		end)
 	end
 
 	prompt.Triggered:Connect(function(plr) onStandTriggered(stand, plr) end)

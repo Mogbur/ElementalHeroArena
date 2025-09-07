@@ -11,6 +11,11 @@ local Styles  = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("
 local Mastery = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("StyleMastery"))
 local T       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("SkillTuning"))
 local DamageNumbers = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("DamageNumbers"))
+local SSS = game:GetService("ServerScriptService")
+local Combat do
+    local ok, mod = pcall(function() return require(SSS.RojoServer.Modules.Combat) end)
+    Combat = ok and mod or require(SSS.Modules.Combat)
+end
 
 -- Optional VFX bus
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
@@ -314,12 +319,14 @@ function Brain.attach(hero: Model)
 			end
 		end
 
-		-- damage application
+		-- damage application (always via Combat so spawn-guard works)
 		local h2 = target:FindFirstChildOfClass("Humanoid")
 		local pp = (target:IsA("Model") and (target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart))
 			or (target:IsA("BasePart") and target)
+
 		if h2 then
-			h2:TakeDamage(dealt)
+			-- if you have an element or a known player source, pass them; otherwise nil is fine
+			Combat.ApplyDamage(nil, target, dealt, nil, true)  -- true = basic attack
 		else
 			local hp = target:GetAttribute("Health")
 			if hp then target:SetAttribute("Health", math.max(0, hp - dealt)) end

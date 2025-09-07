@@ -22,7 +22,16 @@ local DamageNumbers = require(RSM:WaitForChild("DamageNumbers"))
 
 -- Server-only modules: prefer ServerScriptService/RojoServer/Modules, else ServerScriptService/Modules
 local SSS = game:GetService("ServerScriptService")
-local WeaponVisuals = require(SSS.RojoServer.Modules.WeaponVisuals)
+local WeaponVisuals do
+    local ok, mod = pcall(function()
+        return require(SSS.RojoServer.Modules.WeaponVisuals)
+    end)
+    if ok and mod then
+        WeaponVisuals = mod
+    else
+        WeaponVisuals = require(SSS:WaitForChild("Modules"):WaitForChild("WeaponVisuals"))
+    end
+end
 local SMods = (function()
     local rs = SSS:FindFirstChild("RojoServer")
     if rs and rs:FindFirstChild("Modules") then
@@ -392,6 +401,28 @@ local function teleportHeroToIdle(plot: Model)
 		hum.PlatformStand = false
 		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
 	end
+end
+-- Blocks any non-Combat damage during the short spawn guard window.
+local function hookSpawnHealthGuard(hero: Model)
+	local hum = hero and hero:FindFirstChildOfClass("Humanoid"); if not hum then return end
+	if hum:GetAttribute("GuardHooked") == 1 then return end
+	hum:SetAttribute("GuardHooked", 1)
+
+	local lastSafe = hum.Health
+	hum.HealthChanged:Connect(function(newHP)
+		local now   = os.clock()
+		local untilT = math.max(
+			tonumber(hero:GetAttribute("InvulnUntil")) or 0,
+			tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
+		)
+		if now < untilT and newHP < lastSafe then
+			-- Undo any stray damage that didn't go through Combat.ApplyDamage
+			hum.Health = lastSafe
+			return
+		end
+		-- Keep a rolling "safe" value
+		if newHP > lastSafe then lastSafe = newHP end
+	end)
 end
 
 local function getBannerAnchorPart(plot)
@@ -1157,6 +1188,7 @@ local function runFightLoop(plot, portal, owner, opts)
 	local autoChain       = plot:GetAttribute("AutoChain")
 	local wavesThisRun    = 0
 	local hero            = ensureHero(plot, owner.UserId)
+	hookSpawnHealthGuard(hero)
 	local hum             = hero and hero:FindFirstChildOfClass("Humanoid")
 	local plr             = plotToPlayer[plot]
 	local preSpawned      = (type(opts)=="table" and opts.preSpawned) or false
@@ -1206,7 +1238,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
 			if hrp and hrp:IsA("BasePart") then
 				hrp.CanCollide = false
-				task.delay(0.30, function()
+				task.delay(0.10, function()
 					if hrp and hrp.Parent then
 						hrp.CanCollide = true
 					end
@@ -1359,8 +1391,16 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
+	hookSpawnHealthGuard(h)
 	h:SetAttribute("LastHitBy", 0)
 	local hum = h:FindFirstChildOfClass("Humanoid")
+	if hum and not hum:GetAttribute("DeathHooked") then
+		hum.Died:Connect(function()
+			local last = h:GetAttribute("LastHitBy")
+			print(("[Death] Hero down. LastHitBy=%s"):format(tostring(last)))
+		end)
+		hum:SetAttribute("DeathHooked", 1)
+	end
 	if hum then
 		hum.BreakJointsOnDeath = false
 		hum.Health = hum.MaxHealth
@@ -1380,7 +1420,7 @@ local function startWaveCountdown(plot, portal, owner)
 	if hrp and hrp:IsA("BasePart") then
 		hrp.CanCollide = false
 		hrp.CanTouch = true
-		task.delay(0.30, function()
+		task.delay(0.10, function()
 			if hrp and hrp.Parent then
 				hrp.CanCollide = true
 			end

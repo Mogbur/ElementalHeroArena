@@ -158,14 +158,14 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
 
-	-- >>> spawn guard + damage mute + friendly-fire
+	-- >>> guard at spawn + friendly fire + mute (INSERT THIS)
 	if model then
-		-- Hard mute set by PlotService while the hero is landing.
+		-- hard mute set by PlotService while landing on the arena floor
 		if tonumber(model:GetAttribute("DamageMute")) == 1 then
 			return false, 0
 		end
 
-		-- Short time-based guard from PlotService.
+		-- short time-based guard
 		local now        = os.clock()
 		local inv        = tonumber(model:GetAttribute("InvulnUntil")) or 0
 		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
@@ -173,14 +173,14 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			return false, 0
 		end
 
-		-- Friendly-fire: same owner can't damage their own hero.
+		-- Friendly fire: same owner cannot damage their hero
 		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
 		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
 		if srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
 			return false, 0
 		end
 	end
-	-- <<< spawn guard + damage mute + friendly-fire
+	-- <<< guard
 
 
 	-- element multiplier
@@ -219,6 +219,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			end
 
 			if afterShield > 0 then
+				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or 0)
 				hum:TakeDamage(afterShield)
 			end
 
@@ -233,7 +234,6 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				end)
 			end
 
-			model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or 0)
 			local dead = hum.Health <= 0
 			return dead, (afterShield > 0) and afterShield or 0
 		end
