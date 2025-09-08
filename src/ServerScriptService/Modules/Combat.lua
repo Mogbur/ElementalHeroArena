@@ -1,4 +1,5 @@
 -- ServerScriptService/Modules/Combat.lua
+print(("[Combat] loaded: %s"):format(script:GetFullName()))
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -160,14 +161,14 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 	-- >>> guard at spawn + friendly fire + mute (INSERT THIS)
 	if model then
-		-- hard mute set by PlotService while landing on the arena floor
+		-- Hard mute while landing in arena (set by PlotService) — blocks ANY hit source
 		if tonumber(model:GetAttribute("DamageMute")) == 1 then
 			return false, 0
 		end
 
-		-- short time-based guard
+		-- (you already have these)
 		local now        = os.clock()
-		local inv        = tonumber(model:GetAttribute("InvulnUntil")) or 0
+		local inv        = tonumber(model:GetAttribute("InvulnUntil"))     or 0
 		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
 		if now < math.max(inv, spawnGuard) then
 			return false, 0
@@ -176,12 +177,12 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		-- Friendly fire: same owner cannot damage their hero
 		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
 		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
-		if srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
+		local isHero      = (model:GetAttribute("IsHero") == true) or (Players:GetPlayerFromCharacter(model) ~= nil)
+		if isHero and srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
 			return false, 0
 		end
 	end
 	-- <<< guard
-
 
 	-- element multiplier
 	local targetElem = "Neutral"
@@ -202,13 +203,15 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			-- incoming reductions (only apply if it's a Player character)
 			-- resolve player owner for "Hero" models too
 			local targetPlayer = Players:GetPlayerFromCharacter(model)
-			if not targetPlayer and model and model:IsA("Model") then
+			if not targetPlayer and model and model:IsA("Model") and (model:GetAttribute("IsHero") == true) then
 				local ownerId = tonumber(model:GetAttribute("OwnerUserId")) or 0
 				if ownerId > 0 then
 					targetPlayer = Players:GetPlayerByUserId(ownerId)
 				end
 			end
-			dmg = incomingFromStyle(targetPlayer, dmg)
+			if targetPlayer then
+				dmg = incomingFromStyle(targetPlayer, dmg)
+			end
 
 			-- shield absorb (attributes on target)
 			local afterShield = absorbShield(model, dmg)
@@ -220,6 +223,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 			if afterShield > 0 then
 				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or 0)
+				model:SetAttribute("LastCombatDamageAt", os.clock())
 				hum:TakeDamage(afterShield)
 			end
 

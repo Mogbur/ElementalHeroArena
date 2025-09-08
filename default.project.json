@@ -11,7 +11,10 @@
     "ServerScriptService": {
       "$className": "ServerScriptService",
       "RojoServer": {
-        "$path": "src/ServerScriptService"
+        "$path": "src/ServerScriptService",
+        "RojoServer": {
+          "$path": "src/RojoServer"
+        }
       }
     },
     "StarterPlayer": {

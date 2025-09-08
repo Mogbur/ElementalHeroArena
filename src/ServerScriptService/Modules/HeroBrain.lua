@@ -301,41 +301,52 @@ function Brain.attach(hero: Model)
 		return plot and (plot:GetAttribute("CombatLocked") == true) or false
 	end
 
-	-- REPLACE applyDamage() in HeroBrain with this version
+	-- ====== ADD/REPLACE HERE (inside Brain.attach, after getCritParams and before -- skills) ======
+	-- Server-side damage helper:
+	--  - Blocks self-hits (hero hitting their own rig)
+	--  - Sends ALL damage through Combat.ApplyDamage so spawn guard / friendly-fire / shields / style work
 	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?, opts)
-		if amount <= 0 then return 0,false end
+		if not target or amount <= 0 then return 0, false end
 
 		opts = opts or {}
 		local isCrit = false
 		local dealt  = amount
 
-		-- normal crits, unless disabled
+		-- Normal crits unless disabled
 		if allowCrit ~= false then
-			local c, m = getCritParams()
-			-- (We intentionally do NOT fold Bow mastery critDmgMul here so skills aren't affected.)
-			if (opts.forceCrit) or (math.random() < c) then
-				dealt = dealt * m
+			local chance, mult = getCritParams()
+			if (opts.forceCrit) or (math.random() < chance) then
+				dealt = dealt * mult
 				isCrit = true
 			end
 		end
 
-		-- damage application (always via Combat so spawn-guard works)
-		local h2 = target:FindFirstChildOfClass("Humanoid")
+		-- Resolve model & root part
+		local targetModel = target:IsA("Model") and target or target.Parent
 		local pp = (target:IsA("Model") and (target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart))
 			or (target:IsA("BasePart") and target)
 
-		if h2 then
-			-- if you have an element or a known player source, pass them; otherwise nil is fine
-			Combat.ApplyDamage(nil, target, dealt, nil, true)  -- true = basic attack
+		-- HARD BLOCK: never allow the hero to damage themselves (or parts of themselves)
+		if targetModel == hero or (target:IsDescendantOf(hero)) then
+			return 0, false
+		end
+
+		-- Apply damage via Combat (marks “basic attack” when true)
+		local hum = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
+		if hum then
+			-- If you know the source player, pass them; nil is fine but friendly-fire check needs a player to be meaningful.
+			local ownerPlr = Players:GetPlayerByUserId(hero:GetAttribute("OwnerUserId") or 0)
+			Combat.ApplyDamage(ownerPlr, targetModel, dealt, nil, true)  -- true = basic
 		else
+			-- Generic destructible with Health attribute
 			local hp = target:GetAttribute("Health")
 			if hp then target:SetAttribute("Health", math.max(0, hp - dealt)) end
 		end
 
-		-- numbers (displayCrit = show red/big, but without crit multiplier)
+		-- Damage numbers
 		if pp then
 			local shown = math.floor(dealt + 0.5)
-			if isCrit or opts.displayCrit then
+			if isCrit or (opts and opts.displayCrit) then
 				DamageNumbers.pop(pp, shown, Color3.fromRGB(255,90,90), {duration=1.35, rise=10, sizeMul=1.35})
 			else
 				DamageNumbers.pop(pp, shown, color or Color3.fromRGB(255,235,130))
@@ -343,7 +354,6 @@ function Brain.attach(hero: Model)
 		end
 		return dealt, isCrit
 	end
-
 
 	local function applyHeal(model: Instance, amount: number)
 		local h = model:FindFirstChildOfClass("Humanoid")
@@ -604,19 +614,63 @@ function Brain.attach(hero: Model)
 		end
 	end
 
-	-- REPLACE tryMelee() in HeroBrain with this version
+	-- ===== REPLACE tryMelee WITH THIS (inside Brain.attach) =====
 	local bowSwingCount = 0
-local lastStunAt = {} -- [Instance] = time()
+	local lastStunAt = {} -- [Instance] = time()
 
-local function tryMelee(target: Instance): boolean
-	local p = targetPos(target); if not p then return false end
-	local dist = (p - hrp.Position).Magnitude
+	local function tryMelee(target: Instance): boolean
+		local p = targetPos(target); if not p then return false end
+		local dist = (p - hrp.Position).Magnitude
 
-	-- ===== Bow: ranged basic =====
-	if styleId == "Bow" then
-		-- fire only inside basic range; otherwise let the mover close distance
-		local basicRange = T.BOW_BASIC_RANGE or T.FIRE_RANGE or 90
-		if dist > basicRange then return false end
+		-- --- Bow: ranged “basic”
+		if styleId == "Bow" then
+			local basicRange = T.BOW_BASIC_RANGE or T.FIRE_RANGE or 90
+			if dist > basicRange then return false end
+
+			local last = hero:GetAttribute("__lastSwing") or 0
+			if time() - last < SWING_COOLDOWN then return true end
+			hero:SetAttribute("__lastSwing", time())
+
+			faceTowards(hrp, p)
+			hero:SetAttribute("MeleeTick", os.clock())
+
+			-- Surge every Nth shot (bonus damage display, not a real crit)
+			local surge = false
+			if S.forcedCritNth and S.forcedCritNth > 0 then
+				bowSwingCount += 1
+				if (bowSwingCount % S.forcedCritNth) == 0 then surge = true end
+			end
+			local dmg = MELEE_DAMAGE
+			if surge and S.forcedCritBonus and S.forcedCritBonus ~= 0 then
+				dmg = dmg * (1 + S.forcedCritBonus)
+			end
+
+			-- Simple “bolt”
+			local from = hrp.Position + Vector3.new(0, 2, 0)
+			local dir  = (p - from).Unit
+			local bolt = Instance.new("Part")
+			bolt.Size = Vector3.new(0.25, 0.25, 1.2)
+			bolt.Anchored, bolt.CanCollide = true, false
+			bolt.Color = Color3.fromRGB(240,240,240)
+			bolt.CFrame = CFrame.lookAt(from, p)
+			bolt.Parent = workspace
+
+			local speed = 110
+			local flight = dist / speed
+			task.spawn(function()
+				local t0 = time()
+				while time() - t0 < flight do
+					bolt.CFrame = bolt.CFrame + dir * speed * task.wait()
+				end
+				bolt:Destroy()
+				-- allowCrit=false (surge is already included in dmg)
+				applyDamage(target, dmg, Color3.fromRGB(255,235,130), false, { displayCrit = surge })
+			end)
+			return true
+		end
+
+		-- --- Sword / Mace: true melee
+		if dist > ATTACK_RANGE then return false end
 
 		local last = hero:GetAttribute("__lastSwing") or 0
 		if time() - last < SWING_COOLDOWN then return true end
@@ -625,75 +679,28 @@ local function tryMelee(target: Instance): boolean
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
 
-		local surge = false
-		if S.forcedCritNth and S.forcedCritNth > 0 then
-			bowSwingCount += 1
-			if (bowSwingCount % S.forcedCritNth) == 0 then surge = true end
-		end
-		local dmg = MELEE_DAMAGE
-		if surge and S.forcedCritBonus and S.forcedCritBonus ~= 0 then
-			dmg = dmg * (1 + S.forcedCritBonus) -- % bonus only (not a real crit)
-		end
+		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true)
 
-		local from = hrp.Position + Vector3.new(0, 2, 0)
-		local dir  = (p - from).Unit
-		local bolt = Instance.new("Part")
-		bolt.Size = Vector3.new(0.25, 0.25, 1.2)
-		bolt.Anchored, bolt.CanCollide = true, false
-		bolt.Color = Color3.fromRGB(240,240,240)
-		bolt.CFrame = CFrame.lookAt(from, p)
-		bolt.Parent = workspace
-
-		local speed = 110
-		local flight = dist / speed
-		task.spawn(function()
-			local t0 = time()
-			while time() - t0 < flight do
-				bolt.CFrame = bolt.CFrame + dir * speed * task.wait()
+		-- Mace stun (unchanged)
+		if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
+			local now = time()
+			local lastS = lastStunAt[target] or 0
+			if (now - lastS) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
+				lastStunAt[target] = now
+				local dur = S.stunDur or 0.60
+				local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
+				if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur *= 0.5 end
+				local h2 = target:FindFirstChildOfClass("Humanoid")
+				if h2 then
+					local pre = h2.WalkSpeed; h2.WalkSpeed = 0
+					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
+					task.delay(dur, function() if h2 and h2.Parent then h2.WalkSpeed = pre end end)
+				end
 			end
-			bolt:Destroy()
-			-- IMPORTANT: allowCrit=false so we never add normal crit *and* mastery
-			applyDamage(target, dmg, Color3.fromRGB(255,235,130), false, { displayCrit = surge })
-		end)
+		end
 		return true
 	end
-
-	-- ===== Sword/Mace: true melee =====
-	if dist > ATTACK_RANGE then return false end
-
-	local last = hero:GetAttribute("__lastSwing") or 0
-	if time() - last < SWING_COOLDOWN then
-		return true -- we are in range; keep “holding” rather than moving
-	end
-	hero:SetAttribute("__lastSwing", time())
-
-	faceTowards(hrp, p)
-	hero:SetAttribute("MeleeTick", os.clock())
-
-	local dmgBase = MELEE_DAMAGE
-	applyDamage(target, dmgBase, Color3.fromRGB(255,235,130), true)
-
-	-- Mace stun (unchanged)
-	if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
-		local now = time()
-		local lastS = lastStunAt[target] or 0
-		if (now - lastS) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
-			lastStunAt[target] = now
-			local dur = S.stunDur or 0.60
-			local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
-			if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur *= 0.5 end
-			local h2 = target:FindFirstChildOfClass("Humanoid")
-			if h2 then
-				local pre = h2.WalkSpeed; h2.WalkSpeed = 0
-				local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
-				if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
-				task.delay(dur, function() if h2 and h2.Parent then h2.WalkSpeed = pre end end)
-			end
-		end
-	end
-	return true
-end
-
 
 	-- lifetime
 	local conns = {}

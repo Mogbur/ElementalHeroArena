@@ -1391,51 +1391,75 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
-	hookSpawnHealthGuard(h)
+	hookSpawnHealthGuard(h) -- keep this if you wrapped the spawn-guard/mute logic
+
 	h:SetAttribute("LastHitBy", 0)
+
 	local hum = h:FindFirstChildOfClass("Humanoid")
-	if hum and not hum:GetAttribute("DeathHooked") then
-		hum.Died:Connect(function()
-			local last = h:GetAttribute("LastHitBy")
-			print(("[Death] Hero down. LastHitBy=%s"):format(tostring(last)))
-		end)
-		hum:SetAttribute("DeathHooked", 1)
-	end
 	if hum then
+		-- TEMP DEBUG: detect non-Combat health drops during guard (hook once)
+		if h:GetAttribute("GuardDbgHooked") ~= 1 then
+			h:SetAttribute("GuardDbgHooked", 1)
+
+			local lastCombatAt = 0
+			h:GetAttributeChangedSignal("LastCombatDamageAt"):Connect(function()
+				lastCombatAt = os.clock()
+			end)
+
+			hum.HealthChanged:Connect(function(new)
+				local old = hum:GetAttribute("PrevHealth") or new
+				hum:SetAttribute("PrevHealth", new)
+				if new < old then
+					local dt = os.clock() - lastCombatAt
+					if dt > 0.06 then
+						warn(("[GuardDbg] Non-Combat damage Δ=%.1f (dt=%.2fs)  Mute=%s  GuardLeft=%.2f")
+							:format(old - new, dt, tostring(h:GetAttribute("DamageMute")),
+								math.max(0, (h:GetAttribute("InvulnUntil") or 0) - os.clock())))
+					end
+				end
+			end)
+		end
+
+		-- death hook (once)
+		if not hum:GetAttribute("DeathHooked") then
+			hum.Died:Connect(function()
+				local last = h:GetAttribute("LastHitBy")
+				print(("[Death] Hero down. LastHitBy=%s"):format(tostring(last)))
+			end)
+			hum:SetAttribute("DeathHooked", 1)
+		end
+
 		hum.BreakJointsOnDeath = false
 		hum.Health = hum.MaxHealth
 	end
+
 	setModelFrozen(h, false)
 	h:SetAttribute("BarsVisible", 1)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
 	plot:SetAttribute("AtIdle", false)
 
-	-- === SPAWN GUARD (short + deterministic; same as loop) ===
 	local now = os.clock()
-	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)
+	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)  -- bump this to ~0.60
 	h:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
-	h:SetAttribute("DamageMute", 1)
+	h:SetAttribute("DamageMute", 1)  -- <— add this
 
 	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
-	if hrp and hrp:IsA("BasePart") then
-		hrp.CanCollide = false
-		hrp.CanTouch = true
-		task.delay(0.10, function()
-			if hrp and hrp.Parent then
-				hrp.CanCollide = true
-			end
-		end)
-	end
-	local released = false
-	local function releaseMute()
-		if released or not h or not h.Parent then return end
-		released = true
-		h:SetAttribute("DamageMute", 0)
-		h:SetAttribute("SpawnGuardUntil", 0)
-		h:SetAttribute("InvulnUntil", 0)
-		if hrp and hrp.Parent then hrp.CanCollide = true end
-	end
 	if hrp then
+		hrp.CanCollide = false
+		hrp.CanTouch   = true
+		task.delay(0.45, function() if hrp and hrp.Parent then hrp.CanCollide = true end end)
+
+		-- release as soon as we actually touch "sand/arena/ground"
+		local released
+		local function releaseMute()
+			if released or not h or not h.Parent then return end
+			released = true
+			h:SetAttribute("DamageMute", 0)
+			h:SetAttribute("SpawnGuardUntil", 0)
+			h:SetAttribute("InvulnUntil", 0)
+			if hrp and hrp.Parent then hrp.CanCollide = true end
+		end
+
 		local con; con = hrp.Touched:Connect(function(other)
 			if not other or other:IsDescendantOf(h) then return end
 			local n = string.lower(other.Name)
@@ -1444,9 +1468,9 @@ local function startWaveCountdown(plot, portal, owner)
 				releaseMute()
 			end
 		end)
+
+		task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute) -- hard timeout
 	end
-	task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
-	-- === end SPAWN GUARD ===
 
 	setCombatLock(plot, true)
 	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
