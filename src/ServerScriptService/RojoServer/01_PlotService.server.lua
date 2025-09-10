@@ -1340,6 +1340,7 @@ local function runFightLoop(plot, portal, owner, opts)
 				local cpStart = ((startWave - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
+				plot:SetAttribute("FullHealOnNextStart", true)
 				setCombatLock(plot, true)
 				teleportHeroToIdle(plot)
 				cleanupLeftovers_local()
@@ -1473,7 +1474,13 @@ local function startWaveCountdown(plot, portal, owner)
 		end
 
 		hum.BreakJointsOnDeath = false
-		hum.Health = hum.MaxHealth
+		-- ✅ Full heal only if a defeat/checkpoint just happened
+		local doFull = (plot:GetAttribute("FullHealOnNextStart") == true)
+		if doFull then
+			hum.Health = hum.MaxHealth
+		end
+		-- consume the flag so it only happens once
+		plot:SetAttribute("FullHealOnNextStart", false)
 	end
 
 	setModelFrozen(h, false)
@@ -1485,7 +1492,7 @@ local function startWaveCountdown(plot, portal, owner)
 	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)  -- bump this to ~0.60
 	h:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("DamageMute", 1)  -- <— add this
-
+	
 	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
 	if hrp then
 		hrp.CanCollide = false
