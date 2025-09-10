@@ -66,12 +66,6 @@ do
 		warn("[PlotService] Couldn't enforce Default<>Default collidable:", err)
 	end
 end
--- one-time: make "Hero" group exist and collide with Default
-pcall(function() PhysicsService:RegisterCollisionGroup("Hero") end)
-pcall(function()
-	PhysicsService:CollisionGroupSetCollidable("Hero", "Default", true)
-	PhysicsService:CollisionGroupSetCollidable("Hero", "Hero",   false)
-end)
 
 local HeroTemplate  = ServerStorage:WaitForChild("HeroTemplate")
 local EnemyTemplate = ServerStorage:WaitForChild("EnemyTemplate")
@@ -270,7 +264,7 @@ local function thawModelHard(model)
 			bp.Anchored = false
 			bp.AssemblyLinearVelocity  = Vector3.zero
 			bp.AssemblyAngularVelocity = Vector3.zero
-			bp.CollisionGroup = "Default"
+			bp.CollisionGroup = "Hero"
 		end
 	end
 	hum.PlatformStand, hum.AutoRotate, hum.Sit = false, true, false
@@ -376,6 +370,12 @@ local function findHeroAnchor(plot)
 	for _, d in ipairs(plot:GetDescendants()) do
 		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
 	end
+end
+
+local function _isArenaGround(inst)
+	if not inst then return false end
+	if inst:IsA("Terrain") then return true end
+	return inst:IsA("BasePart") and inst.CollisionGroup == "ArenaGround"
 end
 
 -- Add to 01_PlotService.server.lua
@@ -687,11 +687,18 @@ local function topSurfaceY(part)
 	return nil
 end
 
--- Probe several points and return the HIGHEST hit Y around a position.
-local function probeGroundY(origin, exclude)
+-- Returns a robust ground Y near an anchor:
+--   * accepts Terrain OR BaseParts in CollisionGroup "ArenaGround"
+--   * samples 5 rays (center + 4 offsets)
+--   * only accepts hits within ±8 studs of the anchor's Y (skips ceilings)
+local function seekArenaGroundY(anchorPos: Vector3, anchorY: number, exclude: {Instance}?)
 	local rp = RaycastParams.new()
 	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.FilterDescendantsInstances = exclude or {}
+
+	local excludes = {}
+	if exclude then
+		for _,e in ipairs(exclude) do table.insert(excludes, e) end
+	end
 
 	local offsets = {
 		Vector3.new(0,0,0),
@@ -699,15 +706,38 @@ local function probeGroundY(origin, exclude)
 		Vector3.new( 0,0, 2), Vector3.new( 0,0,-2),
 	}
 
+	local function isArenaGround(inst: Instance?)
+		if not inst then return false end
+		if inst:IsA("Terrain") then return true end
+		return inst:IsA("BasePart") and inst.CollisionGroup == "ArenaGround"
+	end
+
+	local TOL = 8 -- vertical clamp around anchor
 	local bestY
+
 	for _, off in ipairs(offsets) do
-		local start = origin + off + Vector3.new(0, 120, 0)
-		local hit = workspace:Raycast(start, Vector3.new(0, -2000, 0), rp)
-		if hit then
-			bestY = bestY and math.max(bestY, hit.Position.Y) or hit.Position.Y
+		local start = anchorPos + off + Vector3.new(0, 120, 0)
+		local tries = 0
+		while tries < 8 do
+			rp.FilterDescendantsInstances = excludes
+			local hit = workspace:Raycast(start, Vector3.new(0, -400, 0), rp)
+			if not hit then break end
+			if isArenaGround(hit.Instance) then
+				local y = hit.Position.Y
+				-- only take ground close to the anchor plane (ignore ceilings)
+				if math.abs(y - anchorY) <= TOL then
+					bestY = bestY and math.max(bestY, y) or y
+				end
+				break
+			end
+			-- skip obstacle and keep searching
+			table.insert(excludes, hit.Instance)
+			start = hit.Position - Vector3.new(0, 0.05, 0)
+			tries += 1
 		end
 	end
-	return bestY or origin.Y
+
+	return bestY or anchorY
 end
 
 -- Stronger ground placement for hero (two-pass)
@@ -742,7 +772,7 @@ local function teleportHeroTo(plot, anchorName, opts)
 	-- place roughly at the anchor first
 	hero:PivotTo(anchor.CFrame + Vector3.new(0, 6, 0))
 
-	local groundY = probeGroundY(anchor.Position, { hero })
+	local groundY = seekArenaGroundY(anchor.Position, anchor.Position.Y, { hero })
 
 	-- set feet on the ground using HipHeight + HRP half height
 	local hum = hero:FindFirstChildOfClass("Humanoid")
@@ -1049,17 +1079,15 @@ local function spawnWave(plot, portal)
 			local lateral = math.random(-6, 6)
 			local dropPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 30, 0)
 
-			local hit = workspace:Raycast(dropPos, Vector3.new(0, -1000, 0), rayParams)
-			local groundY = (hit and hit.Position.Y) or portal.Position.Y
-			local floorGroup = (hit and hit.Instance and hit.Instance:IsA("BasePart")) and hit.Instance.CollisionGroup or "Default"
-			pcall(function() PhysicsService:CollisionGroupSetCollidable("Default", floorGroup, true) end)
+			-- NEW: find arena floor robustly (ignores ceilings/raised plates)
+			local groundY = seekArenaGroundY(dropPos, portal.Position.Y, { plot })
 
-			local lookAt = Vector3.new(dropPos.X, groundY + 2, dropPos.Z) - fwd
-			local lookCF = CFrame.lookAt(Vector3.new(dropPos.X, groundY + 2, dropPos.Z), lookAt)
+			-- Build a spawn CFrame that faces back toward the arena
+			local spawnPos = Vector3.new(dropPos.X, groundY + 2, dropPos.Z)
+			local lookCF   = CFrame.lookAt(spawnPos, spawnPos - fwd)
 
 			local rank = (waveIdx % 5 == 0) and "MiniBoss" or nil
 
-			-- EnemyFactory: stats & brain from catalog (single source of truth)
 			local enemy = EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
 				elem = elem,
 				rank = rank,
@@ -1275,11 +1303,10 @@ local function runFightLoop(plot, portal, owner, opts)
 				hrp.CanTouch = true
 				local con; con = hrp.Touched:Connect(function(hit)
 					if not hit or hit:IsDescendantOf(hero) then return end
-					local n  = string.lower(hit.Name)
-					local cg = (hit:IsA("BasePart") and hit.CollisionGroup) or ""
-
-					if cg == "ArenaGround" or n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
+					if _isArenaGround(hit) then
 						if con then con:Disconnect() end
+						print("[SpawnGuard] release on", hit:GetFullName(),
+							"cg=", (hit:IsA("BasePart") and hit.CollisionGroup) or "Terrain")
 						releaseMute()
 					end
 				end)
@@ -1501,8 +1528,7 @@ local function startWaveCountdown(plot, portal, owner)
 		hrp.CanTouch   = true
 		task.delay(0.45, function() if hrp and hrp.Parent then hrp.CanCollide = true end end)
 
-		-- release as soon as we actually touch "sand/arena/ground"
-		local released
+		local released = false
 		local function releaseMute()
 			if released or not h or not h.Parent then return end
 			released = true
@@ -1512,13 +1538,13 @@ local function startWaveCountdown(plot, portal, owner)
 			if hrp and hrp.Parent then hrp.CanCollide = true end
 		end
 
+		-- ✅ use `h` (not `hero`) and the ground helper so Terrain counts too
 		local con; con = hrp.Touched:Connect(function(hit)
-			if not hit or hit:IsDescendantOf(hero) then return end
-			local n  = string.lower(hit.Name)
-			local cg = (hit:IsA("BasePart") and hit.CollisionGroup) or ""
-
-			if cg == "ArenaGround" or n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
+			if not hit or hit:IsDescendantOf(h) then return end
+			if _isArenaGround(hit) then
 				if con then con:Disconnect() end
+				print("[SpawnGuard] release on", hit:GetFullName(),
+					"cg=", (hit:IsA("BasePart") and hit.CollisionGroup) or "Terrain")
 				releaseMute()
 			end
 		end)
