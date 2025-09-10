@@ -83,7 +83,7 @@ local SPAWN_ANCHOR      = "02_SpawnAnchor"
 local HERO_IDLE_ANCHOR  = "03_HeroAnchor"
 local PORTAL_ANCHOR     = "05_PortalAnchor"
 local BANNER_ANCHOR     = "06_BannerAnchor" -- optional; falls back to portal
-local ARENA_HERO_SPAWN  = "HeroSpawn"
+local ARENA_HERO_SPAWN  = "07_HeroArenaAnchor"
 
 -- Wave restart checkpoints (every N waves)
 local WAVE_CHECKPOINT_INTERVAL = 5   -- 5 = restart to 1/6/11/...
@@ -1275,8 +1275,10 @@ local function runFightLoop(plot, portal, owner, opts)
 				hrp.CanTouch = true
 				local con; con = hrp.Touched:Connect(function(hit)
 					if not hit or hit:IsDescendantOf(hero) then return end
-					local n = string.lower(hit.Name)
-					if n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
+					local n  = string.lower(hit.Name)
+					local cg = (hit:IsA("BasePart") and hit.CollisionGroup) or ""
+
+					if cg == "ArenaGround" or n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
 						if con then con:Disconnect() end
 						releaseMute()
 					end
@@ -1492,7 +1494,7 @@ local function startWaveCountdown(plot, portal, owner)
 	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)  -- bump this to ~0.60
 	h:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("DamageMute", 1)  -- <— add this
-	
+
 	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
 	if hrp then
 		hrp.CanCollide = false
@@ -1510,10 +1512,12 @@ local function startWaveCountdown(plot, portal, owner)
 			if hrp and hrp.Parent then hrp.CanCollide = true end
 		end
 
-		local con; con = hrp.Touched:Connect(function(other)
-			if not other or other:IsDescendantOf(h) then return end
-			local n = string.lower(other.Name)
-			if n:find("sand") or n:find("arena") or n:find("ground") or other:IsA("Terrain") then
+		local con; con = hrp.Touched:Connect(function(hit)
+			if not hit or hit:IsDescendantOf(hero) then return end
+			local n  = string.lower(hit.Name)
+			local cg = (hit:IsA("BasePart") and hit.CollisionGroup) or ""
+
+			if cg == "ArenaGround" or n:find("sand") or n:find("arena") or n:find("ground") or hit:IsA("Terrain") then
 				if con then con:Disconnect() end
 				releaseMute()
 			end
