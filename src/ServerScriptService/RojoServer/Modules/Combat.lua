@@ -159,30 +159,30 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- Allow part or model; prefer enemy model if a part was passed
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
 
-	-- >>> guard at spawn + friendly fire + mute (INSERT THIS)
-	if model then
-		-- Hard mute while landing in arena (set by PlotService) — blocks ANY hit source
-		if tonumber(model:GetAttribute("DamageMute")) == 1 then
-			return false, 0
-		end
+	-- >>> guard at spawn + friendly fire + mute
+    if model then
+        -- Hard mute while landing in arena (PlotService sets this)
+        if tonumber(model:GetAttribute("DamageMute")) == 1 then
+            return false, 0
+        end
 
-		-- (you already have these)
-		local now        = os.clock()
-		local inv        = tonumber(model:GetAttribute("InvulnUntil"))     or 0
-		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
-		if now < math.max(inv, spawnGuard) then
-			return false, 0
-		end
+        local now        = os.clock()
+        local inv        = tonumber(model:GetAttribute("InvulnUntil"))     or 0
+        local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
+        if now < math.max(inv, spawnGuard) then
+            return false, 0
+        end
 
-		-- Friendly fire: same owner cannot damage their hero
-		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
-		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
-		local isHero      = (model:GetAttribute("IsHero") == true) or (Players:GetPlayerFromCharacter(model) ~= nil)
-		if isHero and srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
-			return false, 0
-		end
-	end
-	-- <<< guard
+        -- Friendly fire: same owner cannot damage their hero
+        local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
+        local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
+        local isHero      = (model:GetAttribute("IsHero") == true)
+                            or (Players:GetPlayerFromCharacter(model) ~= nil)
+        if isHero and srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
+            return false, 0
+        end
+    end
+    -- <<< guard
 
 	-- element multiplier
 	local targetElem = "Neutral"
@@ -222,7 +222,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			end
 
 			if afterShield > 0 then
-				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or 0)
+				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or -1)
 				model:SetAttribute("LastCombatDamageAt", os.clock())
 				hum:TakeDamage(afterShield)
 			end

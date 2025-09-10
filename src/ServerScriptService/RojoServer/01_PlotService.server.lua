@@ -51,11 +51,10 @@ task.spawn(function()
 	end
 end)
 
--- put this near the top of the file
 local function isCombatDeath(hero: Model)
     local last = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
-    local who  = tonumber(hero:GetAttribute("LastHitBy")) or 0
-    return who ~= 0 and (os.clock() - last) <= 1.0
+    -- Any death within ~1s of damage routed via Combat is "legit" (AI or player)
+    return (os.clock() - last) <= 1.0
 end
 
 -- One-time collision sanity: ensure Default collides with itself.
