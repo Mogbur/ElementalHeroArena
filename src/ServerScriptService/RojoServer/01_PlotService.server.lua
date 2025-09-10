@@ -51,6 +51,13 @@ task.spawn(function()
 	end
 end)
 
+-- put this near the top of the file
+local function isCombatDeath(hero: Model)
+    local last = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
+    local who  = tonumber(hero:GetAttribute("LastHitBy")) or 0
+    return who ~= 0 and (os.clock() - last) <= 1.0
+end
+
 -- One-time collision sanity: ensure Default collides with itself.
 do
 	local ok, err = pcall(function()
@@ -404,25 +411,34 @@ local function teleportHeroToIdle(plot: Model)
 end
 -- Blocks any non-Combat damage during the short spawn guard window.
 local function hookSpawnHealthGuard(hero: Model)
-	local hum = hero and hero:FindFirstChildOfClass("Humanoid"); if not hum then return end
-	if hum:GetAttribute("GuardHooked") == 1 then return end
-	hum:SetAttribute("GuardHooked", 1)
+    local hum = hero and hero:FindFirstChildOfClass("Humanoid"); if not hum then return end
+    if hum:GetAttribute("GuardHooked") == 1 then return end
+    hum:SetAttribute("GuardHooked", 1)
 
-	local lastSafe = hum.Health
-	hum.HealthChanged:Connect(function(newHP)
-		local now   = os.clock()
-		local untilT = math.max(
-			tonumber(hero:GetAttribute("InvulnUntil")) or 0,
-			tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
-		)
-		if now < untilT and newHP < lastSafe then
-			-- Undo any stray damage that didn't go through Combat.ApplyDamage
-			hum.Health = lastSafe
-			return
-		end
-		-- Keep a rolling "safe" value
-		if newHP > lastSafe then lastSafe = newHP end
-	end)
+    local lastSafe = hum.Health
+    hum.HealthChanged:Connect(function(newHP)
+        local now = os.clock()
+
+        -- accept intentional drops (soft revive to 1 HP)
+        if hero:GetAttribute("GuardAllowDrop") == 1 then
+            lastSafe = newHP  -- reset baseline so we don’t bounce back up
+            return
+        end
+
+        local untilT = math.max(
+            tonumber(hero:GetAttribute("InvulnUntil")) or 0,
+            tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
+        )
+
+        if now < untilT and newHP < lastSafe then
+            hum.Health = lastSafe
+            return
+        end
+
+        if newHP > lastSafe then
+            lastSafe = newHP
+        end
+    end)
 end
 
 local function getBannerAnchorPart(plot)
@@ -1291,6 +1307,34 @@ local function runFightLoop(plot, portal, owner, opts)
 		local t0 = time()
 		while enemiesAliveForPlot(plot) > 0 and (time() - t0) < ENEMY_TTL_SEC do
 			if hum and hum.Health <= 0 then
+				local legit = isCombatDeath(hero)
+
+				-- Fallback: if we are mid-fight with enemies alive, treat as legit
+				if not legit then
+					local inCombat = (hero:GetAttribute("BarsVisible") == 1) and (plot:GetAttribute("AtIdle") ~= true)
+					if inCombat and enemiesAliveForPlot(plot) > 0 then
+						legit = true
+						warn("[Death] Fallback marked as LEGIT (mid-combat with enemies alive; LastHitBy was 0)")
+					end
+				end
+
+				if not legit then
+					warn(("[Death] Ignored NON-combat death (LastHitBy=%s)"):format(tostring(hero:GetAttribute("LastHitBy"))))
+					hero:SetAttribute("GuardAllowDrop", 1)
+					hum.Health = math.max(1, hum.Health, 1)
+					pcall(function()
+						hum:ChangeState(Enum.HumanoidStateType.Running)
+						hum.Sit = false; hum.PlatformStand = false; hum.AutoRotate = true
+					end)
+					local now = os.clock()
+					hero:SetAttribute("InvulnUntil",     now + 0.20)
+					hero:SetAttribute("SpawnGuardUntil", now + 0.20)
+					hero:SetAttribute("DamageMute", 0)
+					task.delay(0.25, function() if hero then hero:SetAttribute("GuardAllowDrop", 0) end end)
+					continue
+				end
+
+				-- === Legit combat death -> Defeat flow ===
 				if plr then RE_WaveText:FireClient(plr, {kind="result", result="Defeat", wave=startWave}) end
 				task.wait(BANNER_HOLD_SEC)
 				print(("[Balance] Defeat on Wave %d after %.1fs"):format(startWave, time() - t0))
@@ -1298,15 +1342,13 @@ local function runFightLoop(plot, portal, owner, opts)
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
 				setCombatLock(plot, true)
-				teleportHeroToIdle(plot)          -- <— new one-liner
+				teleportHeroToIdle(plot)
 				cleanupLeftovers_local()
-				-- Let Animator/WeaponVisuals finish a frame or two, then freeze cleanly.
 				task.delay(0.25, function()
-					local h = getHero(plot); if not h then return end
-					-- make sure it's a single assembly first
-					setModelFrozen(h, false)
-					teleportHeroToIdle(plot)          -- place again (now fully assembled)
-					freezeHeroAtIdle(plot)            -- anchors for the showroom pose
+					local h2 = getHero(plot); if not h2 then return end
+					setModelFrozen(h2, false)
+					teleportHeroToIdle(plot)
+					freezeHeroAtIdle(plot)
 					task.defer(pinFrozenHeroToIdleGround, plot)
 				end)
 				return
@@ -1423,8 +1465,10 @@ local function startWaveCountdown(plot, portal, owner)
 		-- death hook (once)
 		if not hum:GetAttribute("DeathHooked") then
 			hum.Died:Connect(function()
-				local last = h:GetAttribute("LastHitBy")
-				print(("[Death] Hero down. LastHitBy=%s"):format(tostring(last)))
+				local legit = isCombatDeath(h)
+				print(("[Death] Hero down. Legit=%s LastHitBy=%s")
+					:format(tostring(legit), tostring(h:GetAttribute("LastHitBy"))))
+				-- Do NOT end the run here; runFightLoop handles defeat.
 			end)
 			hum:SetAttribute("DeathHooked", 1)
 		end

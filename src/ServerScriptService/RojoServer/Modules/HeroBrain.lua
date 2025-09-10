@@ -143,6 +143,67 @@ function Brain.attach(hero: Model)
 		warn("[HeroBrain] Missing Humanoid/Root on", hero:GetFullName())
 		return
 	end
+	-- touch probe (optional): log parts that recently touched the hero
+	local recentTouches = {}
+
+	local function dumpRecentTouches()
+		local now = os.clock()
+		for name, t in pairs(recentTouches) do
+			if now - t <= 1.0 then
+				warn("[TouchProbe] recent touch ->", name)
+			else
+				recentTouches[name] = nil
+			end
+		end
+	end
+
+	-- track what touches the root (you can add more parts if you want)
+	hrp.Touched:Connect(function(hit)
+		if hit and hit.Parent then
+			recentTouches[hit:GetFullName()] = os.clock()
+		end
+	end)
+
+	-- === NON-COMBAT HEALTH DROP GUARD (only during spawn guard or idle) ===
+	do
+		local lastHP = hum.Health
+		hum.HealthChanged:Connect(function(newHP)
+			local prev = lastHP
+			lastHP = newHP
+			if newHP >= prev then return end
+
+			-- allow intentional server-side drops (soft revive)
+			if hero:GetAttribute("GuardAllowDrop") == 1 then return end
+
+			-- only guard during spawn guard or while idle (not mid-fight)
+			local now    = os.clock()
+			local untilT = math.max(
+				tonumber(hero:GetAttribute("InvulnUntil")) or 0,
+				tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
+			)
+			local inGuard = (now < untilT) or (hero:GetAttribute("DamageMute") == 1)
+
+			local plot    = hero:FindFirstAncestorWhichIsA("Model")
+			local inIdle  = (hero:GetAttribute("BarsVisible") or 0) == 0
+				or (plot and plot:GetAttribute("AtIdle") == true)
+
+			if not (inGuard or inIdle) then
+				-- active combat: do not refund drops here
+				return
+			end
+
+			-- real non-combat drop during guarded time → refund
+			local lastCombatT = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
+			local dt = os.clock() - lastCombatT
+			if dt > 0.06 then
+				warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs)"):format(prev - newHP, dt))
+				hum.Health = math.max(prev, 1)
+				hum:ChangeState(Enum.HumanoidStateType.Running)
+				hum.Health = prev
+			end
+		end)
+	end
+
 
 	ensureShieldAttrs(hero)
 	hum.WalkSpeed = 13
