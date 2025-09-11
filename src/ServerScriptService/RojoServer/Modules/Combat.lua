@@ -53,10 +53,10 @@ local function absorbShield(target, amount)
 	if shp <= 0 then return amount end
 
 	-- expire by time as well
-	local untilT = tonumber(m:GetAttribute("ShieldUntil")) or 0
+	local untilT = tonumber(m:GetAttribute("ShieldExpireAt")) or 0
 	if untilT > 0 and os.clock() >= untilT then
 		m:SetAttribute("ShieldHP", 0)
-		m:SetAttribute("ShieldUntil", 0)
+		m:SetAttribute("ShieldExpireAt", 0)
 		return amount
 	end
 

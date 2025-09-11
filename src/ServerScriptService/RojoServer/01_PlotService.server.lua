@@ -121,7 +121,13 @@ local TOTEM_SFX = {
 	count1 = 9125640290,
 	go     = 9116427328,
 }
-
+local function dbgCountCanTouch(model: Model)
+    local n=0
+    for _,bp in ipairs(model:GetDescendants()) do
+        if bp:IsA("BasePart") and bp.CanTouch then n+=1 end
+    end
+    print("[Dbg] parts with CanTouch=true:", n)
+end
 -- === Forward declarations ===
 local setSignpost
 local pinFrozenHeroToIdleGround -- forward declaration
@@ -149,6 +155,75 @@ local function playAt(partOrPos, soundId, vol)
 	s.Ended:Once(function() if isTemp and holder then holder:Destroy() end end)
 	Debris:AddItem(holder, 5)
 end
+-- Install once per hero; blocks + logs any non-Combat health drops (outside Combat.lua)
+local function hookHealthFirewall(hero: Model)
+    local hum = hero and hero:FindFirstChildOfClass("Humanoid"); if not hum then return end
+    if hum:GetAttribute("FirewallHooked") == 1 then return end
+    hum:SetAttribute("FirewallHooked", 1)
+
+    local lastSafe = hum.Health
+    hum.HealthChanged:Connect(function(newHP)
+        -- accept increases AND equals (prevents Δ=0.0 spam)
+        if newHP >= lastSafe then
+            lastSafe = newHP
+            return
+        end
+
+        -- ignore tiny jitter
+        local delta = lastSafe - newHP
+        if delta <= 0.5 then
+            lastSafe = newHP
+            return
+        end
+
+        -- allow intentional server-side edits (style rescale, revive, etc.)
+        if hero:GetAttribute("GuardAllowDrop") == 1 then
+            lastSafe = newHP
+            return
+        end
+
+        -- allow Combat-routed damage (very recent)
+        local lastCombat = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
+        local dt = os.clock() - lastCombat
+        if dt <= 0.06 then
+            lastSafe = newHP
+            return
+        end
+
+        -- Non-Combat: log + probe overlaps (informational only)
+        local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+        if hrp then
+            local params = OverlapParams.new()
+            params.FilterType = Enum.OverlapFilterType.Exclude
+            params.FilterDescendantsInstances = { hero }
+
+            local parts = workspace:GetPartsInPart(hrp, params)
+            warn(("[Probe] Non-Combat Δ=%.1f | overlaps=%d | state=%s | pos=%s")
+                :format(delta, #parts, tostring(hum:GetState()), tostring(hrp.Position)))
+            for _, p in ipairs(parts) do
+                warn(("  - %s | cg=%s | CanCollide=%s | CanTouch=%s")
+                    :format(p:GetFullName(), p.CollisionGroup, tostring(p.CanCollide), tostring(p.CanTouch)))
+                local up = p
+                for _ = 1,3 do
+                    if not up then break end
+                    for _, ch in ipairs(up:GetChildren()) do
+                        if ch:IsA("Script") then
+                            warn("      Script:", ch:GetFullName())
+                        end
+                    end
+                    up = up.Parent
+                end
+            end
+        end
+
+        -- refund the drop
+        warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs)"):format(delta, dt))
+        hum.Health = math.max(lastSafe, 1)
+        hum:ChangeState(Enum.HumanoidStateType.Running)
+        hum.Health = lastSafe
+    end)
+end
+
 
 -- Freeze/thaw (kept for other uses)
 local function setModelFrozen(model, on)
@@ -265,6 +340,7 @@ local function thawModelHard(model)
 			bp.AssemblyLinearVelocity  = Vector3.zero
 			bp.AssemblyAngularVelocity = Vector3.zero
 			bp.CollisionGroup = "Hero"
+			bp.CanTouch = false
 		end
 	end
 	hum.PlatformStand, hum.AutoRotate, hum.Sit = false, true, false
@@ -471,6 +547,14 @@ local function getPlotsSorted()
 	end)
 	return list
 end
+-- Disable/enable .Touched on an entire rig (keeps collisions unchanged)
+local function setModelCanTouch(model: Model, canTouch: boolean)
+	for _, bp in ipairs(model:GetDescendants()) do
+		if bp:IsA("BasePart") then
+			bp.CanTouch = canTouch and true or false
+		end
+	end
+end
 
 local function normalizeHeroCollision(hero: Model)
 	local hrp = hero and (hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart)
@@ -487,6 +571,7 @@ local function normalizeHeroCollision(hero: Model)
 			bp.AssemblyAngularVelocity = Vector3.zero
 		end
 	end
+	setModelCanTouch(hero, false) -- <-- run once here to ensure no parts have CanTouch=true
 end
 
 local function cleanupStrayHeroes()
@@ -568,6 +653,7 @@ local function freezeHeroAtIdle(plot)
 		if bp:IsA("BasePart") then
 			bp.Anchored = (bp == hrp)
 			bp.CanCollide = (bp == hrp)
+			bp.CanTouch = false
 			bp.AssemblyLinearVelocity  = Vector3.zero
 			bp.AssemblyAngularVelocity = Vector3.zero
 		end
@@ -626,9 +712,12 @@ local function ensureHero(plot, ownerId)
                 bp.AssemblyLinearVelocity  = Vector3.zero
                 bp.AssemblyAngularVelocity = Vector3.zero
                 bp.CollisionGroup = "Hero"
+				bp.CanTouch = false
                 bp.CanCollide = (bp == hrp) -- HRP only
             end
         end
+		setModelCanTouch(existing, false)
+		hookHealthFirewall(existing)
         return existing
     end
 
@@ -655,9 +744,11 @@ local function ensureHero(plot, ownerId)
             bp.AssemblyLinearVelocity  = Vector3.zero
             bp.AssemblyAngularVelocity = Vector3.zero
             bp.CollisionGroup = "Hero"
+			bp.CanCollide = (bp.Name == "HumanoidRootPart") -- <— add for parity
         end
     end
-
+	setModelCanTouch(clone, false)
+	hookHealthFirewall(clone)
     mirrorPlayerSkillsToHero(plot, clone, ownerId)
     ensureHeroBrain(clone)
 	pcall(function() require(SSS.RojoServer.Modules.HeroAnim).attach(clone:FindFirstChildOfClass("Humanoid")) end)
@@ -768,7 +859,7 @@ local function teleportHeroTo(plot, anchorName, opts)
 			bp.CanCollide = (bp == hrpOnly)
 		end
 	end
-
+	setModelCanTouch(hero, false)
 	-- place roughly at the anchor first
 	hero:PivotTo(anchor.CFrame + Vector3.new(0, 6, 0))
 
@@ -1102,6 +1193,7 @@ local function spawnWave(plot, portal)
 						bp.AssemblyLinearVelocity  = Vector3.zero
 						bp.AssemblyAngularVelocity = Vector3.zero
 						bp.CollisionGroup = "Default"
+						bp.CanTouch = false
 					end
 				end
 
@@ -1288,7 +1380,7 @@ local function runFightLoop(plot, portal, owner, opts)
 				end)
 			end
 
-			-- release as soon as HRP touches arena ground, or after timeout
+			-- release guard (timeout-only path; we disabled touches during guard)
 			local released = false
 			local function releaseMute()
 				if released or not hero or not hero.Parent then return end
@@ -1296,23 +1388,23 @@ local function runFightLoop(plot, portal, owner, opts)
 				hero:SetAttribute("DamageMute", 0)
 				hero:SetAttribute("SpawnGuardUntil", 0)
 				hero:SetAttribute("InvulnUntil", 0)
-				if hrp and hrp.Parent then hrp.CanCollide = true end
+				if hrp and hrp.Parent then
+					hrp.CanCollide = true
+					setModelCanTouch(hero, false)
+				end
 			end
 
 			if hrp then
-				hrp.CanTouch = true
-				local con; con = hrp.Touched:Connect(function(hit)
-					if not hit or hit:IsDescendantOf(hero) then return end
-					if _isArenaGround(hit) then
-						if con then con:Disconnect() end
-						print("[SpawnGuard] release on", hit:GetFullName(),
-							"cg=", (hit:IsA("BasePart") and hit.CollisionGroup) or "Terrain")
-						releaseMute()
-					end
+				-- brief physics safety
+				hrp.CanCollide = false
+				task.delay(0.10, function()
+					if hrp and hrp.Parent then hrp.CanCollide = true end
 				end)
+
+				-- **key change**: block *all* touches during the guard
+				hrp.CanTouch = false
+				task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
 			end
-			task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
-			-- === end SPAWN GUARD ===
 
 			cleanupLeftovers_local()
 
@@ -1462,6 +1554,7 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
+	hookHealthFirewall(h)
 	hookSpawnHealthGuard(h) -- keep this if you wrapped the spawn-guard/mute logic
 
 	h:SetAttribute("LastHitBy", 0)
@@ -1525,8 +1618,7 @@ local function startWaveCountdown(plot, portal, owner)
 	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
 	if hrp then
 		hrp.CanCollide = false
-		hrp.CanTouch   = true
-		task.delay(0.45, function() if hrp and hrp.Parent then hrp.CanCollide = true end end)
+		hrp.CanTouch   = false
 
 		local released = false
 		local function releaseMute()
@@ -1535,21 +1627,23 @@ local function startWaveCountdown(plot, portal, owner)
 			h:SetAttribute("DamageMute", 0)
 			h:SetAttribute("SpawnGuardUntil", 0)
 			h:SetAttribute("InvulnUntil", 0)
-			if hrp and hrp.Parent then hrp.CanCollide = true end
+			if hrp and hrp.Parent then
+				hrp.CanCollide = true
+				setModelCanTouch(h, false)
+			end
 		end
 
-		-- ✅ use `h` (not `hero`) and the ground helper so Terrain counts too
-		local con; con = hrp.Touched:Connect(function(hit)
-			if not hit or hit:IsDescendantOf(h) then return end
-			if _isArenaGround(hit) then
-				if con then con:Disconnect() end
-				print("[SpawnGuard] release on", hit:GetFullName(),
-					"cg=", (hit:IsA("BasePart") and hit.CollisionGroup) or "Terrain")
-				releaseMute()
-			end
-		end)
+		if hrp then
+			-- brief physics safety
+			hrp.CanCollide = false
+			task.delay(0.10, function()
+				if hrp and hrp.Parent then hrp.CanCollide = true end
+			end)
 
-		task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute) -- hard timeout
+			-- **key change**: block *all* touches during the guard
+			hrp.CanTouch = false
+			task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
+		end
 	end
 
 	setCombatLock(plot, true)

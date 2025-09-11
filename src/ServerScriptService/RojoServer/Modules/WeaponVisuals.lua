@@ -71,7 +71,9 @@ local function setNoCollide(inst: Instance)
 	for _, d in ipairs(inst:GetDescendants()) do
 		if d:IsA("BasePart") then
 			d.CanCollide = false
-			d.Anchored   = false
+			d.CanTouch   = false          -- <<< add
+            d.Anchored   = false
+            d.CollisionGroup = "Effects"  -- <<< add
 		end
 	end
 end

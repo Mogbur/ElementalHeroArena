@@ -171,7 +171,10 @@ function Brain.attach(hero: Model)
 			local prev = lastHP
 			lastHP = newHP
 			if newHP >= prev then return end
-
+			
+			-- ignore tiny jitter from physics/rounding
+			local delta = prev - newHP
+			if delta <= 0.5 then return end
 			-- allow intentional server-side drops (soft revive)
 			if hero:GetAttribute("GuardAllowDrop") == 1 then return end
 
@@ -246,7 +249,6 @@ function Brain.attach(hero: Model)
 	end
 
 	local styleId, S, B
-	local BASE_MAX = hum.MaxHealth
 	local MELEE_DAMAGE   = 15
 	local SWING_COOLDOWN = 0.60
 
@@ -260,9 +262,33 @@ function Brain.attach(hero: Model)
 		local xp  = tonumber(plr and plr:GetAttribute("StyleXP_"..styleId)) or 0
 		B = Mastery.bonuses(styleId, xp)
 
-		-- Max HP mul
-		hum.MaxHealth = math.floor(BASE_MAX * (S.hpMul or 1.0) + 0.5)
-		hum.Health    = math.min(hum.Health, hum.MaxHealth)
+		-- Max HP mul (keep ratio; whitelist the write so guards don't “refund”)
+		-- 1) figure out the base (pre-style) MaxHealth
+		-- Prefer a canonical attribute if you have it; otherwise derive from last known mul
+		local lastMul = math.max(0.01, (plr and plr:GetAttribute("LastHpMul")) or 1)
+		local baseMax = hero:GetAttribute("BaseMaxHealth")
+		if not baseMax or baseMax <= 0 then
+			-- derive base from current state if no canonical base is set
+			baseMax = hum.MaxHealth / lastMul
+		end
+		baseMax = math.max(1, math.floor(baseMax + 0.5))
+
+		-- 2) apply current style multiplier
+		local newMax = math.floor(baseMax * (S.hpMul or 1.0) + 0.5)
+
+		-- 3) preserve current health *ratio* across the change
+		local oldMax = math.max(1, hum.MaxHealth)
+		local ratio  = hum.Health / oldMax
+
+		hero:SetAttribute("GuardAllowDrop", 1)
+		hum.MaxHealth = newMax
+		hum.Health    = math.clamp(math.floor(newMax * ratio + 0.5), 1, newMax)
+		task.delay(0.20, function()
+			if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end
+		end)
+
+		-- 4) remember current style mul so future derivations are stable
+		if plr then plr:SetAttribute("LastHpMul", S.hpMul or 1.0) end
 
 		-- Melee damage / swing speed muls (basic attacks)
 		local baseMelee = 15

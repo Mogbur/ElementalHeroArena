@@ -42,6 +42,8 @@ local function setAnchoredNoCollide(inst: Instance, anchored: boolean)
 		if d:IsA("BasePart") then
 			d.Anchored = anchored
 			d.CanCollide = false
+			d.CanTouch   = false           -- <<< add
+            d.CollisionGroup = "Effects"   -- <<< add
 		end
 	end
 end
@@ -177,22 +179,30 @@ end
 
 -- apply base HP/ATK/SPD multipliers + CurrentStyle to player, and re-scale HP smoothly
 local function applyBaseMults(player: Player, hero: Model, styleId: string)
-	local S = WeaponStyles[styleId] or {}
-	player:SetAttribute("CurrentStyle", styleId)
-	player:SetAttribute("StyleAtkMul", S.atkMul or 1)
-	player:SetAttribute("StyleSpdMul", S.spdMul or 1)
-	player:SetAttribute("StyleHpMul",  S.hpMul  or 1)
+    local S = WeaponStyles[styleId] or {}
+    player:SetAttribute("CurrentStyle", styleId)
+    player:SetAttribute("StyleAtkMul", S.atkMul or 1)
+    player:SetAttribute("StyleSpdMul", S.spdMul or 1)
+    player:SetAttribute("StyleHpMul",  S.hpMul  or 1)
 
-	local hum = hero:FindFirstChildOfClass("Humanoid")
-	if hum and hum.Health > 0 then
-		local lastMul = player:GetAttribute("LastHpMul") or 1
-		local baseMax = hum.MaxHealth / math.max(0.01, lastMul)
-		local newMax  = math.max(1, baseMax * (S.hpMul or 1))
-		local ratio   = hum.Health / math.max(1, hum.MaxHealth)
-		hum.MaxHealth = newMax
-		hum.Health    = math.clamp(newMax * ratio, 1, newMax)
-		player:SetAttribute("LastHpMul", S.hpMul or 1)
-	end
+    local hum = hero:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then
+        -- >>> allow intentional HP drop during rescale
+        hero:SetAttribute("GuardAllowDrop", 1)
+
+        local lastMul = player:GetAttribute("LastHpMul") or 1
+        local baseMax = hum.MaxHealth / math.max(0.01, lastMul)
+        local newMax  = math.max(1, baseMax * (S.hpMul or 1))
+        local ratio   = hum.Health / math.max(1, hum.MaxHealth)
+
+        hum.MaxHealth = newMax
+        hum.Health = math.clamp(math.floor(newMax * ratio + 0.5), 1, newMax)
+        player:SetAttribute("LastHpMul", S.hpMul or 1)
+
+        -- give the guards a tick to stand down, then re-enable
+        task.delay(0.2, function() if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end end)
+        -- <<<
+    end
 end
 
 local function onStandTriggered(stand: Model, player: Player)
@@ -249,6 +259,8 @@ local function wireStand(stand: Model)
 	local root = stand:FindFirstChild("StandRoot")
 	if not (root and root:IsA("BasePart")) then return end
 	stand.PrimaryPart = root
+	root.CanTouch = false
+    root.CollisionGroup = "Effects"  -- <<< safe bucket
 
 	local prompt = stand:FindFirstChildOfClass("ProximityPrompt")
 	if not prompt then

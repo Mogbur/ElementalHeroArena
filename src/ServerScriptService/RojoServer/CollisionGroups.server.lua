@@ -36,7 +36,7 @@ ensureGroup("ArenaGround") -- NEW: ground/floor parts go here
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Hero",    false) end)
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Enemy",   false) end)
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Effects", false) end)
-
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Effects", false) end)
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Enemy",  true)  end)
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Hero",   true)  end)
 pcall(function() PhysicsService:CollisionGroupSetCollidable("Enemy","Enemy", true)  end)
