@@ -178,7 +178,7 @@ local function setStyleOnHero(hero: Model, style: string)
 end
 
 -- apply base HP/ATK/SPD multipliers + CurrentStyle to player, and re-scale HP smoothly
-local function applyBaseMults(player: Player, hero: Model, styleId: string)
+local function applyBaseMults(player, hero, styleId)
     local S = WeaponStyles[styleId] or {}
     player:SetAttribute("CurrentStyle", styleId)
     player:SetAttribute("StyleAtkMul", S.atkMul or 1)
@@ -187,11 +187,15 @@ local function applyBaseMults(player: Player, hero: Model, styleId: string)
 
     local hum = hero:FindFirstChildOfClass("Humanoid")
     if hum and hum.Health > 0 then
-        -- >>> allow intentional HP drop during rescale
         hero:SetAttribute("GuardAllowDrop", 1)
 
         local lastMul = player:GetAttribute("LastHpMul") or 1
-        local baseMax = hum.MaxHealth / math.max(0.01, lastMul)
+        local baseMax = hero:GetAttribute("BaseMaxHealth")
+        if not baseMax or baseMax <= 0 then
+            baseMax = hum.MaxHealth / math.max(0.01, lastMul)
+        end
+        baseMax = math.max(1, math.floor(baseMax + 0.5))
+
         local newMax  = math.max(1, baseMax * (S.hpMul or 1))
         local ratio   = hum.Health / math.max(1, hum.MaxHealth)
 
@@ -199,9 +203,9 @@ local function applyBaseMults(player: Player, hero: Model, styleId: string)
         hum.Health = math.clamp(math.floor(newMax * ratio + 0.5), 1, newMax)
         player:SetAttribute("LastHpMul", S.hpMul or 1)
 
-        -- give the guards a tick to stand down, then re-enable
-        task.delay(0.2, function() if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end end)
-        -- <<<
+        task.delay(0.2, function()
+            if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end
+        end)
     end
 end
 

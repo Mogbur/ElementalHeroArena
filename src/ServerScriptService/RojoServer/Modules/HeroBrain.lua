@@ -257,29 +257,23 @@ function Brain.attach(hero: Model)
 		styleId = currentStyleId()
 		S = Styles[styleId] or Styles.SwordShield
 
-		-- mastery bonuses for this style
+		-- mastery bonuses
 		local plr = getOwnerPlayer()
 		local xp  = tonumber(plr and plr:GetAttribute("StyleXP_"..styleId)) or 0
 		B = Mastery.bonuses(styleId, xp)
 
-		-- Max HP mul (keep ratio; whitelist the write so guards don't “refund”)
-		-- 1) figure out the base (pre-style) MaxHealth
-		-- Prefer a canonical attribute if you have it; otherwise derive from last known mul
+		-- compute canonical BASE from either attribute or last known style mul
 		local lastMul = math.max(0.01, (plr and plr:GetAttribute("LastHpMul")) or 1)
 		local baseMax = hero:GetAttribute("BaseMaxHealth")
 		if not baseMax or baseMax <= 0 then
-			-- derive base from current state if no canonical base is set
 			baseMax = hum.MaxHealth / lastMul
 		end
 		baseMax = math.max(1, math.floor(baseMax + 0.5))
 
-		-- 2) apply current style multiplier
 		local newMax = math.floor(baseMax * (S.hpMul or 1.0) + 0.5)
+		local ratio  = hum.Health / math.max(1, hum.MaxHealth)
 
-		-- 3) preserve current health *ratio* across the change
-		local oldMax = math.max(1, hum.MaxHealth)
-		local ratio  = hum.Health / oldMax
-
+		-- whitelist this write so guards don’t “refund” it
 		hero:SetAttribute("GuardAllowDrop", 1)
 		hum.MaxHealth = newMax
 		hum.Health    = math.clamp(math.floor(newMax * ratio + 0.5), 1, newMax)
@@ -287,10 +281,8 @@ function Brain.attach(hero: Model)
 			if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end
 		end)
 
-		-- 4) remember current style mul so future derivations are stable
 		if plr then plr:SetAttribute("LastHpMul", S.hpMul or 1.0) end
 
-		-- Melee damage / swing speed muls (basic attacks)
 		local baseMelee = 15
 		MELEE_DAMAGE   = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
 		local baseSwing = 0.60
