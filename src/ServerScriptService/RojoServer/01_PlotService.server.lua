@@ -194,7 +194,7 @@ local function hookHealthFirewall(hero: Model)
         local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
         if hrp then
             local params = OverlapParams.new()
-            params.FilterType = Enum.OverlapFilterType.Exclude
+            params.FilterType = Enum.RaycastFilterType.Exclude
             params.FilterDescendantsInstances = { hero }
 
             local parts = workspace:GetPartsInPart(hrp, params)
@@ -220,10 +220,10 @@ local function hookHealthFirewall(hero: Model)
         warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs)"):format(delta, dt))
         hum.Health = math.max(lastSafe, 1)
         hum:ChangeState(Enum.HumanoidStateType.Running)
-        hum.Health = lastSafe
+        -- Probe only; HeroBrain will handle refunds during guard/idle.
+		-- hum.Health = lastSafe
     end)
 end
-
 
 -- Freeze/thaw (kept for other uses)
 local function setModelFrozen(model, on)
