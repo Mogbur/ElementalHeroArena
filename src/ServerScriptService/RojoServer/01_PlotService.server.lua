@@ -161,67 +161,72 @@ local function hookHealthFirewall(hero: Model)
     if hum:GetAttribute("FirewallHooked") == 1 then return end
     hum:SetAttribute("FirewallHooked", 1)
 
-    local lastSafe = hum.Health
+    local lastSafe = math.max(1, math.floor(hum.Health + 0.5))
+    hero:SetAttribute("__LastSafeHP", lastSafe)
+
+    -- keep __LastSafeHP <= MaxHealth if MaxHealth ever changes
+    hum:GetPropertyChangedSignal("MaxHealth"):Connect(function()
+        local saved = tonumber(hero:GetAttribute("__LastSafeHP")) or lastSafe
+        local clamped = math.clamp(math.floor(saved + 0.5), 1, hum.MaxHealth)
+        hero:SetAttribute("__LastSafeHP", clamped)
+        if lastSafe > hum.MaxHealth then lastSafe = hum.MaxHealth end
+        if hum.Health > hum.MaxHealth then hum.Health = hum.MaxHealth end
+    end)
+
     hum.HealthChanged:Connect(function(newHP)
-        -- accept increases AND equals (prevents Δ=0.0 spam)
+        -- accept increases AND equals (advance baseline upward only)
         if newHP >= lastSafe then
-            lastSafe = newHP
+            lastSafe = math.clamp(math.floor(newHP + 0.5), 1, hum.MaxHealth)
+            hero:SetAttribute("__LastSafeHP", lastSafe)
             return
         end
 
-        -- ignore tiny jitter
+        -- EDIT: ignore tiny jitter by snapping back (DO NOT move baseline down)
         local delta = lastSafe - newHP
         if delta <= 0.5 then
-            lastSafe = newHP
+            hum.Health = lastSafe
             return
         end
 
-        -- allow intentional server-side edits (style rescale, revive, etc.)
-        if hero:GetAttribute("GuardAllowDrop") == 1 then
-            lastSafe = newHP
-            return
-        end
+        -- REMOVE: GuardAllowDrop baseline poisoning (commented out on purpose)
+        -- if hero:GetAttribute("GuardAllowDrop") == 1 then
+        --     lastSafe = newHP
+        --     hero:SetAttribute("__LastSafeHP", math.floor(lastSafe + 0.5))
+        --     return
+        -- end
 
-        -- allow Combat-routed damage (very recent)
+        -- allow Combat-routed damage (slightly wider window for scheduler jitter)
         local lastCombat = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
         local dt = os.clock() - lastCombat
-        if dt <= 0.06 then
-            lastSafe = newHP
+        if dt <= 0.20 then
+            lastSafe = math.clamp(math.floor(newHP + 0.5), 1, hum.MaxHealth)
+            hero:SetAttribute("__LastSafeHP", lastSafe)
             return
         end
 
-        -- Non-Combat: log + probe overlaps (informational only)
-        local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
-        if hrp then
-            local params = OverlapParams.new()
-            params.FilterType = Enum.RaycastFilterType.Exclude
-            params.FilterDescendantsInstances = { hero }
-
-            local parts = workspace:GetPartsInPart(hrp, params)
-            warn(("[Probe] Non-Combat Δ=%.1f | overlaps=%d | state=%s | pos=%s")
-                :format(delta, #parts, tostring(hum:GetState()), tostring(hrp.Position)))
-            for _, p in ipairs(parts) do
-                warn(("  - %s | cg=%s | CanCollide=%s | CanTouch=%s")
-                    :format(p:GetFullName(), p.CollisionGroup, tostring(p.CanCollide), tostring(p.CanTouch)))
-                local up = p
-                for _ = 1,3 do
-                    if not up then break end
-                    for _, ch in ipairs(up:GetChildren()) do
-                        if ch:IsA("Script") then
-                            warn("      Script:", ch:GetFullName())
-                        end
-                    end
-                    up = up.Parent
-                end
-            end
-        end
-
-        -- refund the drop
+        -- Non-Combat: log + refund
         warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs)"):format(delta, dt))
-        hum.Health = math.max(lastSafe, 1)
-        hum:ChangeState(Enum.HumanoidStateType.Running)
-        -- Probe only; HeroBrain will handle refunds during guard/idle.
-		-- hum.Health = lastSafe
+
+        -- prevent Humanoid from latching into Dead while we revert
+        local wasDeadEnabled = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
+        pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
+
+        local restore = tonumber(hero:GetAttribute("__LastSafeHP")) or lastSafe
+        restore = math.clamp(math.floor(restore + 0.5), 1, hum.MaxHealth)
+        hum.Health = restore
+        lastSafe = restore
+        hero:SetAttribute("__LastSafeHP", restore)
+
+        pcall(function()
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+            hum.Sit = false; hum.PlatformStand = false; hum.AutoRotate = true
+        end)
+
+        task.defer(function()
+            if hum and hum.Parent then
+                pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, wasDeadEnabled) end)
+            end
+        end)
     end)
 end
 
@@ -1429,28 +1434,55 @@ local function runFightLoop(plot, portal, owner, opts)
 			if hum and hum.Health <= 0 then
 				local legit = isCombatDeath(hero)
 
-				-- Fallback: if we are mid-fight with enemies alive, treat as legit
+				-- Guard-aware fallback: only legit if a recent combat hit actually landed
 				if not legit then
-					local inCombat = (hero:GetAttribute("BarsVisible") == 1) and (plot:GetAttribute("AtIdle") ~= true)
-					if inCombat and enemiesAliveForPlot(plot) > 0 then
+					local now         = os.clock()
+					local lastCombat  = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
+					local dtSinceHit  = now - lastCombat
+
+					local muted       = (hero:GetAttribute("DamageMute") == 1)
+					local invUntil    = tonumber(hero:GetAttribute("InvulnUntil")) or 0
+					local spawnUntil  = tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
+					local guardLeft   = math.max(invUntil, spawnUntil) - now
+					local inGuard     = (guardLeft > 0)
+
+					local enemies     = enemiesAliveForPlot(plot)
+					local inCombatUI  = (hero:GetAttribute("BarsVisible") == 1) and (plot:GetAttribute("AtIdle") ~= true)
+
+					-- tweakable window: how "recent" a real hit must be to count as legit
+					local RECENT_HIT_WINDOW = 0.25
+
+					if inCombatUI and enemies > 0 and dtSinceHit <= RECENT_HIT_WINDOW and (not muted) and (not inGuard) then
 						legit = true
-						warn("[Death] Fallback marked as LEGIT (mid-combat with enemies alive; LastHitBy was 0)")
+						warn(("[DeathDbg] Fallback LEGIT  enemies=%d dt=%.2f muted=%d guardLeft=%.2f")
+							:format(enemies, dtSinceHit, muted and 1 or 0, math.max(0, guardLeft)))
+					else
+						warn(("[DeathDbg] Fallback NON-LEGIT  enemies=%d dt=%.2f muted=%d guardLeft=%.2f")
+							:format(enemies, dtSinceHit, muted and 1 or 0, math.max(0, guardLeft)))
 					end
 				end
 
 				if not legit then
 					warn(("[Death] Ignored NON-combat death (LastHitBy=%s)"):format(tostring(hero:GetAttribute("LastHitBy"))))
-					hero:SetAttribute("GuardAllowDrop", 1)
-					hum.Health = math.max(1, hum.Health, 1)
+
+					-- Revert to the last safe HP captured by the firewall (not a heal)
+					local prev = tonumber(hero:GetAttribute("__LastSafeHP")) or hum.MaxHealth
+					-- EDIT: never revive to 1 — give a small buffer so the gnat 1-dmg can't insta-kill
+					prev = math.clamp(math.floor(prev + 0.5), 5, hum.MaxHealth)
+
+					-- DO NOT toggle GuardAllowDrop (that poisoned the firewall baseline)
 					pcall(function()
+						local was = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
+						hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+						hum.Health = prev
 						hum:ChangeState(Enum.HumanoidStateType.Running)
 						hum.Sit = false; hum.PlatformStand = false; hum.AutoRotate = true
+						task.defer(function()
+							if hum and hum.Parent then hum:SetStateEnabled(Enum.HumanoidStateType.Dead, was) end
+						end)
 					end)
-					local now = os.clock()
-					hero:SetAttribute("InvulnUntil",     now + 0.20)
-					hero:SetAttribute("SpawnGuardUntil", now + 0.20)
-					hero:SetAttribute("DamageMute", 0)
-					task.delay(0.25, function() if hero then hero:SetAttribute("GuardAllowDrop", 0) end end)
+
+					-- No invuln/mute extensions; just ignore and carry on.
 					continue
 				end
 

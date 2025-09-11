@@ -33,7 +33,7 @@ local OFFSETS_R15 = {
 		-- slight in toward forearm, tiny down/forward so hand doesn't poke through
 		pos  = Vector3.new(0.08, -0.05, -0.20),
 		-- face outward, TIP down (roll 90). If the emblem looks upside-down, add yaw 180 below.
-		rot  = CFrame.Angles(0, 190, math.rad(-50)),
+		rot = CFrame.Angles(0, math.rad(190), math.rad(-50)),
 		-- If you want the bottom tip to rotate toward the ground more/less:
 		-- rot = CFrame.Angles(0, math.rad(180), math.rad(90)) -- (adds a 180° yaw flip)
 	},
@@ -42,7 +42,7 @@ local OFFSETS_R15 = {
 	W_Bow = {
 		hand = "Right",
 		pos  = Vector3.new(0.02, 0.05, -0.05),
-		rot  = CFrame.Angles(math.rad(-12), math.rad(80), -80), -- up a bit, 180 yaw so string toward hero
+		rot = CFrame.Angles(math.rad(-12), math.rad(80), math.rad(-80)), -- up a bit, 180 yaw so string toward hero
 	},
 }
 
