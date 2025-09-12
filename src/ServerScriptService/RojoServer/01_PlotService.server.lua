@@ -503,7 +503,41 @@ local function preWaveGuard(hero: Model, sec: number?)
 	-- block all .Touched on the rig (safer than per-part HRP only)
 	setModelCanTouch(hero, false)
 
-	-- auto-release by time; we leave CanTouch off (your pipeline already keeps it off)
+	-- NEW: keep Dead disabled until after guard (overlap-safe)
+	local hum = hero:FindFirstChildOfClass("Humanoid")
+	if hum then
+		-- track the latest guard end so overlapping calls don’t restore early
+		local endAt = os.clock() + (sec + 0.50)
+		local prev  = tonumber(hero:GetAttribute("__DeadGuardEndAt")) or 0
+		hero:SetAttribute("__DeadGuardEndAt", math.max(prev, endAt))
+
+		if hum:GetAttribute("__DeadGuardActive") ~= 1 then
+			hum:SetAttribute("__DeadGuardActive", 1)
+
+			local wasDead = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
+			hum:SetAttribute("__PreGuardDeadEnabled", wasDead and 1 or 0)
+			pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
+
+			task.spawn(function()
+				while hum and hum.Parent do
+					if os.clock() >= (tonumber(hero:GetAttribute("__DeadGuardEndAt")) or 0) then
+						pcall(function()
+							hum:SetStateEnabled(
+								Enum.HumanoidStateType.Dead,
+								hero:GetAttribute("__PreGuardDeadEnabled") == 1
+							)
+						end)
+						hum:SetAttribute("__DeadGuardActive", nil)
+						hero:SetAttribute("__PreGuardDeadEnabled", nil)
+						break
+					end
+					task.wait(0.05)
+				end
+			end)
+		end
+	end
+
+	-- auto-release guard flags by time (we leave CanTouch off intentionally)
 	task.delay(sec, function()
 		if hero and hero.Parent then
 			hero:SetAttribute("DamageMute", 0)
@@ -571,10 +605,11 @@ local function hookSpawnHealthGuard(hero: Model)
             tonumber(hero:GetAttribute("SpawnGuardUntil")) or 0
         )
 
-        if now < untilT and newHP < lastSafe then
-            hum.Health = lastSafe
-            return
-        end
+        -- tiny grace past the guard end to cover scheduler jitter
+		if now < (untilT + 0.10) and newHP < lastSafe then
+			hum.Health = lastSafe
+			return
+		end
 
         if newHP > lastSafe then
             lastSafe = newHP
@@ -744,7 +779,7 @@ local function ensureHero(plot, ownerId)
         -- baseline even if already present
         local hum = existing:FindFirstChildOfClass("Humanoid")
         if hum then
-            hum.MaxHealth = math.max(hum.MaxHealth, 180)
+            hum.MaxHealth = math.max(1, hum.MaxHealth)
             if hum.Health > hum.MaxHealth then hum.Health = hum.MaxHealth end
         end
         mirrorPlayerSkillsToHero(plot, existing, ownerId)
@@ -1595,27 +1630,48 @@ local function startWaveCountdown(plot, portal, owner)
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="countdown", n=1, wave=waveIdx}) end
 	playAt(totem.gem, TOTEM_SFX.count1, 1.0);  pulseGem(totem);  task.wait(1.0)
 
-	-- GO — ensure hero, thaw, teleport, set bars, toggle IK, spawn
+	-- GO
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="countdown", n=0, wave=waveIdx}) end
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
 	hookHealthFirewall(h)
-	hookSpawnHealthGuard(h) -- keep this if you wrapped the spawn-guard/mute logic
+	hookSpawnHealthGuard(h)           -- guard hook for spawn window
 	preWaveGuard(h, ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("LastHitBy", 0)
 
-	local hum = h:FindFirstChildOfClass("Humanoid")
+	-- === CHANGED: Dead-state disabled during guard, then restored ===
+	local hum = h and h:FindFirstChildOfClass("Humanoid")
 	if hum then
-		-- TEMP DEBUG: detect non-Combat health drops during guard (hook once)
+		local wasDeadEnabled = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
+		hum:SetAttribute("__PreGuardDeadEnabled", wasDeadEnabled and 1 or 0)
+		pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
+		task.delay(ARENA_SPAWN_GUARD_SEC + 0.50, function()
+			if hum and hum.Parent then
+				pcall(function()
+					hum:SetStateEnabled(Enum.HumanoidStateType.Dead, h:GetAttribute("__PreGuardDeadEnabled") == 1)
+				end)
+				h:SetAttribute("__PreGuardDeadEnabled", nil)
+			end
+		end)
+	end
+
+	-- === CHANGED: allow any tiny HP jitter during & just after guard ===
+	h:SetAttribute("GuardAllowDrop", 1)
+	task.delay(ARENA_SPAWN_GUARD_SEC + 0.35, function()
+		if h and h.Parent then
+			h:SetAttribute("GuardAllowDrop", 0)
+		end
+	end)
+
+	-- TEMP DEBUG (kept as-is, optional to remove later)
+	if hum then
 		if h:GetAttribute("GuardDbgHooked") ~= 1 then
 			h:SetAttribute("GuardDbgHooked", 1)
-
 			local lastCombatAt = 0
 			h:GetAttributeChangedSignal("LastCombatDamageAt"):Connect(function()
 				lastCombatAt = os.clock()
 			end)
-
 			hum.HealthChanged:Connect(function(new)
 				local old = hum:GetAttribute("PrevHealth") or new
 				hum:SetAttribute("PrevHealth", new)
@@ -1638,23 +1694,21 @@ local function startWaveCountdown(plot, portal, owner)
 					print(("[Death] Hero down. Legit=true LastHitBy=%s")
 						:format(tostring(h:GetAttribute("LastHitBy"))))
 				end
-				-- non-combat deaths are ignored silently; runFightLoop handles all logic
 			end)
 			hum:SetAttribute("DeathHooked", 1)
 		end
 
 		hum.BreakJointsOnDeath = false
-		-- ✅ Full heal only if a defeat/checkpoint just happened
-		local doFull = (plot:GetAttribute("FullHealOnNextStart") == true)
-		if doFull then
+
+		-- full heal only if flagged from defeat/checkpoint
+		if plot:GetAttribute("FullHealOnNextStart") == true then
 			hum.Health = hum.MaxHealth
 		end
-		-- consume the flag so it only happens once
 		plot:SetAttribute("FullHealOnNextStart", false)
 	end
 
+	-- Unfreeze, move, set to combat (but DO NOT show bars yet)
 	setModelFrozen(h, false)
-	h:SetAttribute("BarsVisible", 1)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
 	plot:SetAttribute("AtIdle", false)
 
@@ -1668,19 +1722,24 @@ local function startWaveCountdown(plot, portal, owner)
 		end)
 	end
 
+	-- Lock combat during the tiny invuln window, then release
 	setCombatLock(plot, true)
 	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
 
-	-- enable/disable 2H IK for the first wave (preSpawned path)
+	-- IK per weapon
 	do
 		local main = string.lower(tostring(h:GetAttribute("WeaponMain") or ""))
-		if main == "mace" then
-			WeaponVisuals.enableTwoHandIK(h)
-		else
-			WeaponVisuals.disableTwoHandIK(h)
-		end
+		if main == "mace" then WeaponVisuals.enableTwoHandIK(h) else WeaponVisuals.disableTwoHandIK(h) end
 	end
 
+	-- === CHANGED: show bars AFTER the guard window (triggers style re-apply then)
+	task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, function()
+		if h and h.Parent then
+			h:SetAttribute("BarsVisible", 1)
+		end
+	end)
+
+	-- spawn wave
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="wave", wave=waveIdx}) end
 	cleanupLeftovers(plot)
 	spawnWave(plot, portal)
