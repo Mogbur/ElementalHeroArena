@@ -155,6 +155,7 @@ local function playAt(partOrPos, soundId, vol)
 	s.Ended:Once(function() if isTemp and holder then holder:Destroy() end end)
 	Debris:AddItem(holder, 5)
 end
+
 -- Install once per hero; blocks + logs any non-Combat health drops (outside Combat.lua)
 local function hookHealthFirewall(hero: Model)
     local hum = hero and hero:FindFirstChildOfClass("Humanoid"); if not hum then return end
@@ -181,19 +182,12 @@ local function hookHealthFirewall(hero: Model)
             return
         end
 
-        -- EDIT: ignore tiny jitter by snapping back (DO NOT move baseline down)
+        -- ignore tiny jitter by snapping back
         local delta = lastSafe - newHP
         if delta <= 0.5 then
             hum.Health = lastSafe
             return
         end
-
-        -- REMOVE: GuardAllowDrop baseline poisoning (commented out on purpose)
-        -- if hero:GetAttribute("GuardAllowDrop") == 1 then
-        --     lastSafe = newHP
-        --     hero:SetAttribute("__LastSafeHP", math.floor(lastSafe + 0.5))
-        --     return
-        -- end
 
         -- allow Combat-routed damage (slightly wider window for scheduler jitter)
         local lastCombat = tonumber(hero:GetAttribute("LastCombatDamageAt")) or 0
@@ -204,24 +198,59 @@ local function hookHealthFirewall(hero: Model)
             return
         end
 
-        -- Non-Combat: log + refund
-        warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs)"):format(delta, dt))
+        -- ========= Non-Combat: log + refund + break any kill/touch loop =========
+        local lastTouch = hero:GetAttribute("LastTouchName")
+		warn(("[GuardDbg] Blocked non-Combat damage Δ=%.1f (dt=%.2fs) lastTouch=%s")
+			:format(delta, dt, tostring(lastTouch)))
 
-        -- prevent Humanoid from latching into Dead while we revert
+        -- 1) temporarily ghost the hero so Touched/kill bricks can't re-fire
+        local now = os.clock()
+        local already = tonumber(hero:GetAttribute("__GhostUntil")) or 0
+        local GHOST_SEC = 0.75
+        if now > already then
+            hero:SetAttribute("__GhostUntil", now + GHOST_SEC)
+            -- disable touch on all parts
+            local parts = {}
+            for _, d in ipairs(hero:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    parts[#parts+1] = {d, d.CanTouch}
+                    d.CanTouch = false
+                end
+            end
+            -- tiny vertical nudge off the contacting surface
+            local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+            if hrp and hrp:IsA("BasePart") then
+                hrp.CFrame = hrp.CFrame + Vector3.new(0, 0.15, 0)
+            end
+            -- restore CanTouch after the window
+            task.delay(GHOST_SEC, function()
+                for _, rec in ipairs(parts) do
+                    local bp, pre = rec[1], rec[2]
+                    if bp and bp.Parent then
+                        bp.CanTouch = pre
+                    end
+                end
+            end)
+        end
+
+        -- 2) prevent the Dead state from latching while we revert
         local wasDeadEnabled = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
         pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false) end)
 
+        -- 3) refund to safe value
         local restore = tonumber(hero:GetAttribute("__LastSafeHP")) or lastSafe
         restore = math.clamp(math.floor(restore + 0.5), 1, hum.MaxHealth)
         hum.Health = restore
         lastSafe = restore
         hero:SetAttribute("__LastSafeHP", restore)
 
+        -- 4) ensure we’re in a live locomotion state
         pcall(function()
             hum:ChangeState(Enum.HumanoidStateType.Running)
             hum.Sit = false; hum.PlatformStand = false; hum.AutoRotate = true
         end)
 
+        -- 5) restore Dead state flag
         task.defer(function()
             if hum and hum.Parent then
                 pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, wasDeadEnabled) end)
@@ -452,6 +481,38 @@ local function findHeroAnchor(plot)
 		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
 	end
 end
+-- Disable/enable .Touched on an entire rig (keeps collisions unchanged)
+local function setModelCanTouch(model: Model, canTouch: boolean)
+	for _, bp in ipairs(model:GetDescendants()) do
+		if bp:IsA("BasePart") then
+			bp.CanTouch = canTouch and true or false
+		end
+	end
+end
+-- Pre-wave guard: block all damage/touches for a short window (respected by Combat + HeroBrain)
+local function preWaveGuard(hero: Model, sec: number?)
+	sec = sec or ARENA_SPAWN_GUARD_SEC
+	if not hero then return end
+	local untilT = os.clock() + sec
+
+	-- attributes that your other systems already honor
+	hero:SetAttribute("DamageMute", 1)
+	hero:SetAttribute("SpawnGuardUntil", untilT)
+	hero:SetAttribute("InvulnUntil",     untilT)
+
+	-- block all .Touched on the rig (safer than per-part HRP only)
+	setModelCanTouch(hero, false)
+
+	-- auto-release by time; we leave CanTouch off (your pipeline already keeps it off)
+	task.delay(sec, function()
+		if hero and hero.Parent then
+			hero:SetAttribute("DamageMute", 0)
+			hero:SetAttribute("SpawnGuardUntil", 0)
+			hero:SetAttribute("InvulnUntil", 0)
+		end
+	end)
+end
+
 
 local function _isArenaGround(inst)
 	if not inst then return false end
@@ -551,14 +612,6 @@ local function getPlotsSorted()
 		return an:lower() < bn:lower()
 	end)
 	return list
-end
--- Disable/enable .Touched on an entire rig (keeps collisions unchanged)
-local function setModelCanTouch(model: Model, canTouch: boolean)
-	for _, bp in ipairs(model:GetDescendants()) do
-		if bp:IsA("BasePart") then
-			bp.CanTouch = canTouch and true or false
-		end
-	end
 end
 
 local function normalizeHeroCollision(hero: Model)
@@ -1355,65 +1408,31 @@ local function runFightLoop(plot, portal, owner, opts)
 		end
 
 		if not preSpawned then
+			-- arm guard BEFORE any physics/teleports so no stray spikes happen
+			preWaveGuard(hero, ARENA_SPAWN_GUARD_SEC)
+
 			setModelFrozen(hero, false)
-			hero:SetAttribute("BarsVisible", 1)
 			setCombatLock(plot, false)
 			plot:SetAttribute("AtIdle", false)
+
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)
 
-			-- === SPAWN GUARD (short + deterministic) ===
-			local now = os.clock()
-
-			-- time-based attributes (also honored in Combat.lua)
-			hero:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)
-			hero:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
-
-			-- mute all ApplyDamage until ground contact or timeout
-			hero:SetAttribute("DamageMute", 1)
-
-			-- normalize collision every round (prevents carry-over weirdness)
-			normalizeHeroCollision(hero)
-
-			-- keep HRP non-colliding briefly to avoid spawn-brick edges
+			-- tiny HRP collide delay so we don't snag spawn edges
 			local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
 			if hrp and hrp:IsA("BasePart") then
 				hrp.CanCollide = false
-				task.delay(0.10, function()
-					if hrp and hrp.Parent then
-						hrp.CanCollide = true
-					end
-				end)
-			end
-
-			-- release guard (timeout-only path; we disabled touches during guard)
-			local released = false
-			local function releaseMute()
-				if released or not hero or not hero.Parent then return end
-				released = true
-				hero:SetAttribute("DamageMute", 0)
-				hero:SetAttribute("SpawnGuardUntil", 0)
-				hero:SetAttribute("InvulnUntil", 0)
-				if hrp and hrp.Parent then
-					hrp.CanCollide = true
-					setModelCanTouch(hero, false)
-				end
-			end
-
-			if hrp then
-				-- brief physics safety
-				hrp.CanCollide = false
+				-- not strictly needed, but harmless:
+				pcall(function() hrp.CanTouch = false end)
 				task.delay(0.10, function()
 					if hrp and hrp.Parent then hrp.CanCollide = true end
 				end)
-
-				-- **key change**: block *all* touches during the guard
-				hrp.CanTouch = false
-				task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
 			end
 
+			hero:SetAttribute("BarsVisible", 1)
+			normalizeHeroCollision(hero)
 			cleanupLeftovers_local()
 
-			-- enable/disable 2H IK per current weapon (for normal waves)
+			-- enable/disable 2H IK per current weapon
 			do
 				local main = string.lower(tostring(hero:GetAttribute("WeaponMain") or ""))
 				if main == "mace" then
@@ -1463,14 +1482,10 @@ local function runFightLoop(plot, portal, owner, opts)
 				end
 
 				if not legit then
-					warn(("[Death] Ignored NON-combat death (LastHitBy=%s)"):format(tostring(hero:GetAttribute("LastHitBy"))))
-
-					-- Revert to the last safe HP captured by the firewall (not a heal)
+					-- Silent ignore: firewall already captured __LastSafeHP
 					local prev = tonumber(hero:GetAttribute("__LastSafeHP")) or hum.MaxHealth
-					-- EDIT: never revive to 1 — give a small buffer so the gnat 1-dmg can't insta-kill
 					prev = math.clamp(math.floor(prev + 0.5), 5, hum.MaxHealth)
 
-					-- DO NOT toggle GuardAllowDrop (that poisoned the firewall baseline)
 					pcall(function()
 						local was = hum:GetStateEnabled(Enum.HumanoidStateType.Dead)
 						hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
@@ -1482,7 +1497,6 @@ local function runFightLoop(plot, portal, owner, opts)
 						end)
 					end)
 
-					-- No invuln/mute extensions; just ignore and carry on.
 					continue
 				end
 
@@ -1588,7 +1602,7 @@ local function startWaveCountdown(plot, portal, owner)
 	local h = ensureHero(plot, owner.UserId)
 	hookHealthFirewall(h)
 	hookSpawnHealthGuard(h) -- keep this if you wrapped the spawn-guard/mute logic
-
+	preWaveGuard(h, ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("LastHitBy", 0)
 
 	local hum = h:FindFirstChildOfClass("Humanoid")
@@ -1620,9 +1634,11 @@ local function startWaveCountdown(plot, portal, owner)
 		if not hum:GetAttribute("DeathHooked") then
 			hum.Died:Connect(function()
 				local legit = isCombatDeath(h)
-				print(("[Death] Hero down. Legit=%s LastHitBy=%s")
-					:format(tostring(legit), tostring(h:GetAttribute("LastHitBy"))))
-				-- Do NOT end the run here; runFightLoop handles defeat.
+				if legit then
+					print(("[Death] Hero down. Legit=true LastHitBy=%s")
+						:format(tostring(h:GetAttribute("LastHitBy"))))
+				end
+				-- non-combat deaths are ignored silently; runFightLoop handles all logic
 			end)
 			hum:SetAttribute("DeathHooked", 1)
 		end
@@ -1642,40 +1658,14 @@ local function startWaveCountdown(plot, portal, owner)
 	teleportHeroTo(plot, ARENA_HERO_SPAWN)
 	plot:SetAttribute("AtIdle", false)
 
-	local now = os.clock()
-	h:SetAttribute("InvulnUntil",     now + ARENA_SPAWN_GUARD_SEC)  -- bump this to ~0.60
-	h:SetAttribute("SpawnGuardUntil", now + ARENA_SPAWN_GUARD_SEC)
-	h:SetAttribute("DamageMute", 1)  -- <— add this
-
+	-- brief HRP collide jitter so we don't snag spawn edges
 	local hrp = h:FindFirstChild("HumanoidRootPart") or h.PrimaryPart
 	if hrp then
 		hrp.CanCollide = false
-		hrp.CanTouch   = false
-
-		local released = false
-		local function releaseMute()
-			if released or not h or not h.Parent then return end
-			released = true
-			h:SetAttribute("DamageMute", 0)
-			h:SetAttribute("SpawnGuardUntil", 0)
-			h:SetAttribute("InvulnUntil", 0)
-			if hrp and hrp.Parent then
-				hrp.CanCollide = true
-				setModelCanTouch(h, false)
-			end
-		end
-
-		if hrp then
-			-- brief physics safety
-			hrp.CanCollide = false
-			task.delay(0.10, function()
-				if hrp and hrp.Parent then hrp.CanCollide = true end
-			end)
-
-			-- **key change**: block *all* touches during the guard
-			hrp.CanTouch = false
-			task.delay(ARENA_SPAWN_GUARD_SEC + 0.05, releaseMute)
-		end
+		pcall(function() hrp.CanTouch = false end)
+		task.delay(0.10, function()
+			if hrp and hrp.Parent then hrp.CanCollide = true end
+		end)
 	end
 
 	setCombatLock(plot, true)
@@ -1691,11 +1681,9 @@ local function startWaveCountdown(plot, portal, owner)
 		end
 	end
 
-	setCombatLock(plot, false)
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="wave", wave=waveIdx}) end
 	cleanupLeftovers(plot)
 	spawnWave(plot, portal)
-	setCombatLock(plot, false)
 
 	runFightLoop(plot, portal, owner, { preSpawned = true })
 end

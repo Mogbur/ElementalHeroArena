@@ -19,6 +19,7 @@ local WeaponVisuals do
 end
 -- bring WeaponStyles so we can apply HP/ATK/SPD multipliers
 local WeaponStyles = require(ReplicatedStorage.Modules.WeaponStyles)
+local STYLE_SWITCH_GUARD_SEC = 0.75
 
 -- ========= helpers =========
 
@@ -203,7 +204,7 @@ local function applyBaseMults(player, hero, styleId)
         hum.Health = math.clamp(math.floor(newMax * ratio + 0.5), 1, newMax)
         player:SetAttribute("LastHpMul", S.hpMul or 1)
 
-        task.delay(0.2, function()
+        task.delay(0.5, function()
             if hero and hero.Parent then hero:SetAttribute("GuardAllowDrop", 0) end
         end)
     end
@@ -226,6 +227,10 @@ local function onStandTriggered(stand: Model, player: Player)
 
 	local hero = getHero(plot); if not hero then return end
 	local style = styleFromStandName(stand.Name)
+	-- Soft-invuln while swapping styles; prevents any stray non-Combat tick
+	hero:SetAttribute("DamageMute", 1)
+	hero:SetAttribute("SpawnGuardUntil", os.clock() + STYLE_SWITCH_GUARD_SEC)
+	hero:SetAttribute("GuardAllowDrop", 1)
 
 	setStyleOnHero(hero, style)
 	player:SetAttribute("WeaponMain", hero:GetAttribute("WeaponMain"))
@@ -233,6 +238,13 @@ local function onStandTriggered(stand: Model, player: Player)
 
 	applyBaseMults(player, hero, style) -- apply multipliers immediately
 	pcall(function() WeaponVisuals.apply(hero) end)
+	task.delay(STYLE_SWITCH_GUARD_SEC, function()
+		if hero and hero.Parent then
+			hero:SetAttribute("DamageMute", 0)
+			hero:SetAttribute("SpawnGuardUntil", 0)
+			hero:SetAttribute("GuardAllowDrop", 0)
+		end
+	end)
 
 	-- Refresh all stands in this plot
 	for _, s in ipairs(plot:GetDescendants()) do
@@ -320,20 +332,6 @@ local function wireStand(stand: Model)
 	prompt.Enabled = false
 	syncPrompt()      -- harmless first pass
 	hookWhenReady()   -- ensures we hook once the plot is ready
-
-
-	syncPrompt()
-	if plot then
-		plot:GetAttributeChangedSignal("AtIdle"):Connect(function()
-			-- (optional) more debug
-			-- print("[Stands] AtIdle ->", plot:GetAttribute("AtIdle"))
-			syncPrompt()
-		end)
-		plot:GetAttributeChangedSignal("CombatLocked"):Connect(function()
-			-- print("[Stands] CombatLocked ->", plot:GetAttribute("CombatLocked"))
-			syncPrompt()
-		end)
-	end
 
 	prompt.Triggered:Connect(function(plr) onStandTriggered(stand, plr) end)
 	refreshStandDisplay(stand)

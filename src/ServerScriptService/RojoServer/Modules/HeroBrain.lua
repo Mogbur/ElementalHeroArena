@@ -143,6 +143,9 @@ function Brain.attach(hero: Model)
 		warn("[HeroBrain] Missing Humanoid/Root on", hero:GetFullName())
 		return
 	end
+	if hero:GetAttribute("BaseMaxHealth") == nil then
+		hero:SetAttribute("BaseMaxHealth", math.max(1, math.floor(hum.MaxHealth + 0.5)))
+	end
 	-- touch probe (optional): log parts that recently touched the hero
 	local recentTouches = {}
 
@@ -161,6 +164,7 @@ function Brain.attach(hero: Model)
 	hrp.Touched:Connect(function(hit)
 		if hit and hit.Parent then
 			recentTouches[hit:GetFullName()] = os.clock()
+			hero:SetAttribute("LastTouchName", hit:GetFullName())
 		end
 	end)
 
@@ -211,7 +215,9 @@ function Brain.attach(hero: Model)
 	ensureShieldAttrs(hero)
 	hum.WalkSpeed = 13
 	hum.AutoRotate, hum.Sit, hum.PlatformStand = true, false, false
-	hrp.CanCollide = false
+	pcall(function()
+		hrp.CanCollide = (hrp.Name == "HumanoidRootPart")
+	end)
 	for _, d in ipairs(hero:GetDescendants()) do
 		if d:IsA("BasePart") then d.Anchored = false end
 	end
@@ -374,7 +380,16 @@ function Brain.attach(hero: Model)
 		return n
 	end
 
-	local function findPlot(): Model? return hero:FindFirstAncestorWhichIsA("Model") end
+	local function findPlot(): Model?
+		local cur = hero
+		while cur do
+			if cur:IsA("Model") and cur:GetAttribute("OwnerUserId") ~= nil then
+				return cur
+			end
+			cur = cur.Parent
+		end
+		return nil
+	end
 	local function isCombatLocked(): boolean
 		local plot = findPlot()
 		return plot and (plot:GetAttribute("CombatLocked") == true) or false
