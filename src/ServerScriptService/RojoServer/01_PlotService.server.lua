@@ -547,6 +547,98 @@ local function preWaveGuard(hero: Model, sec: number?)
 	end)
 end
 
+-- === Spawn volumes (optional designer controls) ===
+local function getSpawnVolumes(plot: Model)
+    local arena = plot:FindFirstChild("Arena") or plot
+    local function find(name)
+        local p = arena:FindFirstChild(name, true)
+        return (p and p:IsA("BasePart")) and p or nil
+    end
+    return {
+        all    = find("SpawnVol_All"),
+        melee  = find("SpawnVol_Melee"),   -- optional (you didn't add it; that's okay)
+        ranged = find("SpawnVol_Ranged"),
+        boss   = find("SpawnPoint_Boss"),
+        minib  = find("SpawnPoint_MiniBoss"),
+        portal = getAnchor(plot, PORTAL_ANCHOR),
+    }
+end
+
+-- Sample a random local point inside a rotated box. Optional Z band in local space.
+local function samplePointInBox(part: BasePart, bandMin: number?, bandMax: number?)
+    if not part then return nil end
+    local sz = part.Size
+    local rx = (math.random() - 0.5) * sz.X
+    local ry = 0
+    local z0 = bandMin or -0.5
+    local z1 = bandMax or  0.5
+    local rz = (z0 + math.random() * (z1 - z0)) * sz.Z
+    return (part.CFrame * CFrame.new(rx, ry, rz)).Position
+end
+
+local function lookAtArenaFrom(pos: Vector3, portal: BasePart?)
+    local fwd = portal and portal.CFrame.LookVector or Vector3.new(0,0,1)
+    return CFrame.lookAt(pos, pos - fwd) -- match your existing “face toward arena” rule
+end
+
+-- Returns a robust ground Y near an anchor:
+--   * accepts Terrain OR BaseParts in CollisionGroup "ArenaGround"
+--   * samples 5 rays (center + 4 offsets)
+--   * only accepts hits within ±8 studs of the anchor's Y (skips ceilings)
+local function seekArenaGroundY(anchorPos: Vector3, anchorY: number, exclude: {Instance}?)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+
+	local excludes = {}
+	if exclude then
+		for _,e in ipairs(exclude) do table.insert(excludes, e) end
+	end
+
+	local offsets = {
+		Vector3.new(0,0,0),
+		Vector3.new( 2,0, 0), Vector3.new(-2,0, 0),
+		Vector3.new( 0,0, 2), Vector3.new( 0,0,-2),
+	}
+
+	local function isArenaGround(inst: Instance?)
+		if not inst then return false end
+		if inst:IsA("Terrain") then return true end
+		return inst:IsA("BasePart") and inst.CollisionGroup == "ArenaGround"
+	end
+
+	local TOL = 8 -- vertical clamp around anchor
+	local bestY
+
+	for _, off in ipairs(offsets) do
+		local start = anchorPos + off + Vector3.new(0, 120, 0)
+		local tries = 0
+		while tries < 8 do
+			rp.FilterDescendantsInstances = excludes
+			local hit = workspace:Raycast(start, Vector3.new(0, -400, 0), rp)
+			if not hit then break end
+			if isArenaGround(hit.Instance) then
+				local y = hit.Position.Y
+				-- only take ground close to the anchor plane (ignore ceilings)
+				if math.abs(y - anchorY) <= TOL then
+					bestY = bestY and math.max(bestY, y) or y
+				end
+				break
+			end
+			-- skip obstacle and keep searching
+			table.insert(excludes, hit.Instance)
+			start = hit.Position - Vector3.new(0, 0.05, 0)
+			tries += 1
+		end
+	end
+
+	return bestY or anchorY
+end
+
+local function placeOnArenaGround(pos: Vector3, portal: BasePart?, excludeList: {Instance}?)
+    local anchorY = portal and portal.Position.Y or pos.Y
+    local groundY = seekArenaGroundY(pos, anchorY, excludeList or {})
+    return Vector3.new(pos.X, groundY + 2, pos.Z), groundY
+end
 
 local function _isArenaGround(inst)
 	if not inst then return false end
@@ -871,59 +963,6 @@ local function topSurfaceY(part)
 	return nil
 end
 
--- Returns a robust ground Y near an anchor:
---   * accepts Terrain OR BaseParts in CollisionGroup "ArenaGround"
---   * samples 5 rays (center + 4 offsets)
---   * only accepts hits within ±8 studs of the anchor's Y (skips ceilings)
-local function seekArenaGroundY(anchorPos: Vector3, anchorY: number, exclude: {Instance}?)
-	local rp = RaycastParams.new()
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-
-	local excludes = {}
-	if exclude then
-		for _,e in ipairs(exclude) do table.insert(excludes, e) end
-	end
-
-	local offsets = {
-		Vector3.new(0,0,0),
-		Vector3.new( 2,0, 0), Vector3.new(-2,0, 0),
-		Vector3.new( 0,0, 2), Vector3.new( 0,0,-2),
-	}
-
-	local function isArenaGround(inst: Instance?)
-		if not inst then return false end
-		if inst:IsA("Terrain") then return true end
-		return inst:IsA("BasePart") and inst.CollisionGroup == "ArenaGround"
-	end
-
-	local TOL = 8 -- vertical clamp around anchor
-	local bestY
-
-	for _, off in ipairs(offsets) do
-		local start = anchorPos + off + Vector3.new(0, 120, 0)
-		local tries = 0
-		while tries < 8 do
-			rp.FilterDescendantsInstances = excludes
-			local hit = workspace:Raycast(start, Vector3.new(0, -400, 0), rp)
-			if not hit then break end
-			if isArenaGround(hit.Instance) then
-				local y = hit.Position.Y
-				-- only take ground close to the anchor plane (ignore ceilings)
-				if math.abs(y - anchorY) <= TOL then
-					bestY = bestY and math.max(bestY, y) or y
-				end
-				break
-			end
-			-- skip obstacle and keep searching
-			table.insert(excludes, hit.Instance)
-			start = hit.Position - Vector3.new(0, 0.05, 0)
-			tries += 1
-		end
-	end
-
-	return bestY or anchorY
-end
-
 -- Stronger ground placement for hero (two-pass)
 local function teleportHeroTo(plot, anchorName, opts)
 	local hero = ensureHero(plot, plot:GetAttribute("OwnerUserId")); if not hero then return end
@@ -1207,6 +1246,8 @@ local function spawnWave(plot, portal)
 	local elem    = plot:GetAttribute("LastElement") or "Neutral"
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
 	local W = Waves.get(waveIdx)
+	local vols = getSpawnVolumes(plot)
+
 	-- Early-wave balance scalars (lighter at W1–W5, neutral afterward)
 	local function earlyWaveScalars(w)
 		if w == 1 then return 0.42, 0.40 end  -- hpMul, dmgMul
@@ -1255,62 +1296,90 @@ local function spawnWave(plot, portal)
 	local spawnIndex  = 0
 
 	for _, entry in ipairs(plan.list) do
-		local kind = entry.kind
-		for j = 1, entry.n do
-			spawnIndex += 1
+    local kind = entry.kind
+    for j = 1, entry.n do
+        spawnIndex += 1
 
-			local fwd     = portal.CFrame.LookVector
-			local lateral = math.random(-6, 6)
-			local dropPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 30, 0)
+        -- choose miniboss every 5 waves (adjust to your taste)
+        local rank = (waveIdx % 5 == 0) and "MiniBoss" or nil
 
-			-- NEW: find arena floor robustly (ignores ceilings/raised plates)
-			local groundY = seekArenaGroundY(dropPos, portal.Position.Y, { plot })
+        -- Choose a volume based on enemy kind (falls back to All)
+        local targetPart = vols.all
+        local k = string.lower(tostring(kind))
+        if (k == "ranged" or k:find("ranged")) and vols.ranged then
+            targetPart = vols.ranged
+        elseif (k == "melee" or k == "runner" or k == "basic") and vols.melee then
+            targetPart = vols.melee
+        end
 
-			-- Build a spawn CFrame that faces back toward the arena
-			local spawnPos = Vector3.new(dropPos.X, groundY + 2, dropPos.Z)
-			local lookCF   = CFrame.lookAt(spawnPos, spawnPos - fwd)
+        -- Boss/miniboss fixed points override
+        local fixed = (rank == "Boss" and vols.boss) or (rank == "MiniBoss" and vols.minib)
 
-			local rank = (waveIdx % 5 == 0) and "MiniBoss" or nil
+        local worldPos
+        if fixed then
+            worldPos = fixed.Position
+        elseif targetPart then
+            -- Band along local Z: melee→front, ranged→back, all→anywhere
+            local z0, z1 = -0.5, 0.5
+            if targetPart == vols.ranged then
+                z0, z1 = -0.5, -0.10
+            elseif targetPart == vols.melee then
+                z0, z1 =  0.00,  0.50
+            end
+            worldPos = samplePointInBox(targetPart, z0, z1)
+        end
 
-			local enemy = EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
-				elem = elem,
-				rank = rank,
-				wave = waveIdx,
-			})
+        -- Fallback: old scatter if no volumes existed
+        if not worldPos then
+            local fwd = portal.CFrame.LookVector
+            local lateral = math.random(-6, 6)
+            worldPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 0, 0)
+        end
 
-			if enemy then
-				for _, bp in ipairs(enemy:GetDescendants()) do
-					if bp:IsA("BasePart") then
-						bp.Anchored = false
-						bp.CanCollide = (bp == enemy.PrimaryPart) -- HRP only
-						bp.AssemblyLinearVelocity  = Vector3.zero
-						bp.AssemblyAngularVelocity = Vector3.zero
-						bp.CollisionGroup = "Default"
-						bp.CanTouch = false
-					end
-				end
+        -- place + face toward portal (or portal anchor fallback)
+        local portalPart = vols.portal or portal
+        local spawnPos, groundY = placeOnArenaGround(worldPos, portalPart, { plot })
+        local lookCF = lookAtArenaFrom(spawnPos, portalPart)
 
-				local hum = enemy:FindFirstChildOfClass("Humanoid")
-				if hum then
-					hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
-					hum.Health    = hum.MaxHealth
+        -- spawn
+        local enemy = EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
+            elem = elem,
+            rank = rank,
+            wave = waveIdx,
+        })
 
-					local baseDmg = enemy:GetAttribute("BaseDamage") or 10
-					enemy:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
-				end
+        if enemy then
+            for _, bp in ipairs(enemy:GetDescendants()) do
+                if bp:IsA("BasePart") then
+                    bp.Anchored = false
+                    bp.CanCollide = (bp == enemy.PrimaryPart) -- HRP only
+                    bp.AssemblyLinearVelocity  = Vector3.zero
+                    bp.AssemblyAngularVelocity = Vector3.zero
+                    bp.CollisionGroup = "Default"
+                    bp.CanTouch = false
+                end
+            end
 
-				if not CollectionService:HasTag(enemy, "Enemy") then
-					CollectionService:AddTag(enemy, "Enemy")
-				end
+            local hum = enemy:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
+                hum.Health    = hum.MaxHealth
+                local baseDmg = enemy:GetAttribute("BaseDamage") or 10
+                enemy:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
+            end
 
-				attachAntiSink(enemy, groundY)
+            if not CollectionService:HasTag(enemy, "Enemy") then
+                CollectionService:AddTag(enemy, "Enemy")
+            end
 
-				task.delay(ENEMY_TTL_SEC, function()
-					if enemy and enemy.Parent then enemy:Destroy() end
-				end)
-			end
-		end
-	end
+            attachAntiSink(enemy, groundY)
+
+            task.delay(ENEMY_TTL_SEC, function()
+                if enemy and enemy.Parent then enemy:Destroy() end
+            end)
+        end
+    end
+end
 end
 
 local function rewardAndAdvance(plot)
