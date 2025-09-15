@@ -1,4 +1,10 @@
 -- ReplicatedStorage/Modules/Enemy/EnemyCommon.lua
+-- Updates:
+--  - Adds AABB-based ground snap: M.flushToGround(model, groundY, epsilon)
+--  - Tweaks sanitize() to use a safe HipHeight heuristic when no override is given
+--    (fixes feet/toes slightly clipping into the floor on some rigs)
+--  - Keeps all original functions for compatibility (no removals)
+
 local PhysicsService = game:GetService("PhysicsService")
 local CollectionService = game:GetService("CollectionService")
 
@@ -10,7 +16,13 @@ local function setDefaultCollidable()
 	end)
 end
 
-function M.sanitize(model : Model, opts)
+-- NEW: get the model's full AABB height (more reliable than HRP.Size.Y)
+local function modelHeight(model: Model): number
+	local size = model:GetExtentsSize()
+	return size and size.Y or 0
+end
+
+function M.sanitize(model: Model, opts)
 	if not model then return end
 	opts = opts or {}
 
@@ -47,11 +59,15 @@ function M.sanitize(model : Model, opts)
 		weld.Parent = body
 	end
 
+	-- UPDATED: safer default HipHeight if no explicit override is provided
 	local hh = opts.hipHeightOverride
 	if typeof(hh) == "number" then
 		hum.HipHeight = hh
 	else
-		hum.HipHeight = 0
+		-- 10–15% of the model's AABB height is a good general heuristic for R6/R15-style rigs.
+		-- Keep a small floor so tiny mobs don't get forced to 0.
+		local safeHH = math.max(0.8, modelHeight(model) * 0.12)
+		hum.HipHeight = safeHH
 	end
 
 	hum.AutoRotate = true
@@ -60,7 +76,24 @@ function M.sanitize(model : Model, opts)
 	pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
 end
 
-function M.flushToGroundByRoot(model : Model, groundY : number, epsilon)
+-- NEW: snap using the model's AABB (bottom of the whole model to groundY)
+function M.flushToGround(model: Model, groundY: number, epsilon: number?)
+	if not (model and groundY) then return end
+	epsilon = epsilon or 0
+	local pivot = model:GetPivot()
+	local halfY = modelHeight(model) * 0.5
+	if halfY <= 0 then return false end
+	local bottomY = pivot.Position.Y - halfY
+	local dy = (groundY + epsilon) - bottomY
+	if math.abs(dy) > 1e-3 then
+		model:PivotTo(pivot + Vector3.new(0, dy, 0))
+		return true
+	end
+	return false
+end
+
+-- Kept for compatibility: root-size based snap (original behavior)
+function M.flushToGroundByRoot(model: Model, groundY: number, epsilon)
 	if not (model and groundY) then return end
 	local root = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
 	if not (root and root:IsA("BasePart")) then return end
@@ -74,16 +107,16 @@ function M.flushToGroundByRoot(model : Model, groundY : number, epsilon)
 	return false
 end
 
-function M.setOwner(model : Model, userId : number)
+function M.setOwner(model: Model, userId: number)
 	if not model then return end
 	model:SetAttribute("OwnerUserId", tonumber(userId) or 0)
 end
 
-function M.setRank(model : Model, rank : string?)
+function M.setRank(model: Model, rank: string?)
 	if model and rank then model:SetAttribute("Rank", rank) end
 end
 
-function M.colorByElement(model : Model, elem : string?)
+function M.colorByElement(model: Model, elem: string?)
 	if not elem then return end
 	local body = model:FindFirstChild("Body")
 	if not (body and body:IsA("BasePart")) then return end
@@ -98,13 +131,13 @@ function M.colorByElement(model : Model, elem : string?)
 	end
 end
 
-function M.tag(model : Model)
+function M.tag(model: Model)
 	if model and not CollectionService:HasTag(model, "Enemy") then
 		CollectionService:AddTag(model, "Enemy")
 	end
 end
 
-function M.ownToServer(model : Model)
+function M.ownToServer(model: Model)
 	local root = model and (model.PrimaryPart or model:FindFirstChild("HumanoidRootPart"))
 	if root then pcall(function() root:SetNetworkOwner(nil) end) end
 end

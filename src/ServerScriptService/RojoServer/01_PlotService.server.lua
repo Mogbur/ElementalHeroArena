@@ -603,7 +603,13 @@ local function seekArenaGroundY(anchorPos: Vector3, anchorY: number, exclude: {I
 	local function isArenaGround(inst: Instance?)
 		if not inst then return false end
 		if inst:IsA("Terrain") then return true end
-		return inst:IsA("BasePart") and inst.CollisionGroup == "ArenaGround"
+		if inst:IsA("BasePart") then
+			-- ignore obvious non-ground
+			local cg = inst.CollisionGroup
+			if cg == "Enemy" or cg == "Hero" then return false end
+			return inst.CanCollide == true -- accept any collidable part as ground
+		end
+		return false
 	end
 
 	local TOL = 8 -- vertical clamp around anchor
@@ -1261,26 +1267,22 @@ local function spawnWave(plot, portal)
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = {}
 
-	-- place & ground pin using **HRP** bottom (HRP is the collider)
-	local function attachAntiSink(e, groundY)
-		local hum = e:FindFirstChildOfClass("Humanoid"); if not hum then return end
-		local hrp = e:FindFirstChild("HumanoidRootPart") or e.PrimaryPart; if not hrp then return end
-
-		local bottomY = hrp.Position.Y - (hrp.Size.Y * 0.5)
-		local deltaY  = (groundY + 0.05) - bottomY
-		if math.abs(deltaY) > 1e-3 then
-			e:PivotTo(e:GetPivot() + Vector3.new(0, deltaY, 0))
-		end
-
-		hum.PlatformStand = false
-		hum.AutoRotate    = true
-		pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
-		pcall(function() hrp:SetNetworkOwner(nil) end)
-
-		-- debug (one-shot)
-		task.delay(0.1, function()
-			print(("[SpawnDbg] root CanCollide=%s cg=%s bottomY=%.2f groundY=%.2f")
-				:format(tostring(hrp.CanCollide), hrp.CollisionGroup, bottomY, groundY))
+	-- place & ground pin using the model's AABB (matches EnemyCommon.flushToGround)
+	local function attachAntiSink(e: Model, groundY: number)
+		if not (e and groundY) then return end
+		-- resnap next tick to catch any first-frame pose shift
+		task.defer(function()
+			if e and e.Parent then
+				pcall(function() EnemyCommon.flushToGround(e, groundY, 0.02) end)
+				local hum = e:FindFirstChildOfClass("Humanoid")
+				if hum then
+					pcall(function()
+						hum.PlatformStand = false
+						hum.AutoRotate = true
+						hum:ChangeState(Enum.HumanoidStateType.Running)
+					end)
+				end
+			end
 		end)
 	end
 

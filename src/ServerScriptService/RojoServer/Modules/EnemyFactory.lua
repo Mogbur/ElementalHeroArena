@@ -28,6 +28,21 @@ end
 
 local EnemyFactory = {}
 
+local function resnapNextTick(model, targetY)
+    task.defer(function()
+        if model and model.Parent then
+            -- tiny corrective snap using AABB again
+            pcall(function() Common.flushToGround(model, targetY, 0.02) end)
+            -- nudge humanoid into a stable locomotion state
+            local hum = model:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function()
+                hum:Move(Vector3.zero, true)
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+            end) end
+        end
+    end)
+end
+
 local function splitPath(p)
 	local t={}; for s in string.gmatch(p,"[^/]+") do t[#t+1]=s end; return t
 end
@@ -68,10 +83,18 @@ function EnemyFactory.spawn(kind, ownerUserId, lookCF, groundY, parentFolder, op
 	end
 
 	m:PivotTo(lookCF)
-	Common.sanitize(m, { hipHeightOverride = def.hipHeightOverride or 0.1 })
+	local hh = def.hipHeightOverride
+	if hh ~= nil then
+		Common.sanitize(m, { hipHeightOverride = hh })
+	else
+		Common.sanitize(m) -- use heuristic from EnemyCommon
+	end
+
 	Common.colorByElement(m, opts.elem)
+
 	local hover = (opts.attributes and tonumber(opts.attributes.hoverY)) or 0
-	Common.flushToGroundByRoot(m, groundY + hover, 0.05)
+	Common.flushToGround(m, groundY + hover, 0.02)  -- AABB-based snap
+	resnapNextTick(m, groundY + hover)
 	Common.ownToServer(m)
 	Common.tag(m)
 
