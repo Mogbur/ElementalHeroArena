@@ -1346,6 +1346,7 @@ local function spawnWave(plot, portal)
             elem = elem,
             rank = rank,
             wave = waveIdx,
+			hoverY = 1.0, -- <- spawns a little above ground so they visibly “drop”
         })
 
         if enemy then
@@ -1355,7 +1356,7 @@ local function spawnWave(plot, portal)
                     bp.CanCollide = (bp == enemy.PrimaryPart) -- HRP only
                     bp.AssemblyLinearVelocity  = Vector3.zero
                     bp.AssemblyAngularVelocity = Vector3.zero
-                    bp.CollisionGroup = "Default"
+                    bp.CollisionGroup = "Enemy"
                     bp.CanTouch = false
                 end
             end

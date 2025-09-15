@@ -1,111 +1,110 @@
--- ServerScriptService/CollisionGroups.server.lua (modern API)
+-- ServerScriptService/RojoServer/CollisionGroups.server.lua
 local PhysicsService = game:GetService("PhysicsService")
 local Players        = game:GetService("Players")
 
--- ========== helpers ==========
-local function ensureGroup(name)
-	pcall(function() PhysicsService:RegisterCollisionGroup(name) end)
-end
-
-local function setCollidable(a, b, tf)
-	pcall(function() PhysicsService:CollisionGroupSetCollidable(a, b, tf) end)
-end
-
-local function setGroupPart(part: Instance, group: string)
-	if part and part:IsA("BasePart") then
-		part.CollisionGroup = group
+-- helpers -------------
+local function ensure(name) pcall(function() PhysicsService:RegisterCollisionGroup(name) end) end
+local function coll(a,b,tf) pcall(function() PhysicsService:CollisionGroupSetCollidable(a,b,tf) end) end
+local function setPartGroup(p, g) if p and p:IsA("BasePart") then p.CollisionGroup = g end end
+local function setModelGroup(m, g)
+	for _,d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then d.CollisionGroup = g end
 	end
 end
 
-local function setGroupModel(model: Instance, group: string)
-	for _, d in ipairs(model:GetDescendants()) do
-		if d:IsA("BasePart") then
-			d.CollisionGroup = group
-		end
-	end
+-- groups --------------
+for _,g in ipairs({"Player","Hero","Enemy","Effects","ArenaGround","ArenaProps"}) do ensure(g) end
+pcall(function() PhysicsService:CollisionGroupSetCollidable("Default","Default",true) end)
+
+-- core rules ----------
+coll("Player","Hero",   false)
+coll("Player","Enemy",  false)
+coll("Player","Effects",false)
+coll("Hero","Effects",  false)
+coll("Hero","Enemy",    true)
+coll("Hero","Hero",     true)
+coll("Enemy","Enemy",   true)
+
+-- props & ground ------
+-- Props: let players & hero collide, but NOT enemies (prevents enemy pathing snag)
+coll("ArenaProps","Player", true)
+coll("ArenaProps","Hero",   true)
+coll("ArenaProps","Enemy",  false)
+
+-- Ground should collide normally with everyone
+for _,g in ipairs({"Player","Hero","Enemy","Effects","ArenaGround"}) do
+	coll("ArenaGround", g, true)
 end
 
--- ========== groups ==========
-ensureGroup("Player")
-ensureGroup("Hero")
-ensureGroup("Enemy")
-ensureGroup("Effects")
-ensureGroup("ArenaGround") -- NEW: ground/floor parts go here
-
--- Keep your original rules (unchanged)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Hero",    false) end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Enemy",   false) end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Player","Effects", false) end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Effects", false) end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Enemy",  true)  end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Hero","Hero",   true)  end)
-pcall(function() PhysicsService:CollisionGroupSetCollidable("Enemy","Enemy", true)  end)
-
--- Explicit, normal collisions with ground (so physics feels normal)
-setCollidable("ArenaGround","Player",      true)
-setCollidable("ArenaGround","Hero",        true)
-setCollidable("ArenaGround","Enemy",       true)
-setCollidable("ArenaGround","Effects",     true)
-setCollidable("ArenaGround","ArenaGround", true)
-
--- ========== auto-tag characters ==========
-local function onChar(char: Model)
-	setGroupModel(char, "Player")
-end
-
+-- auto-tag player chars
+local function onChar(char) setModelGroup(char,"Player") end
 Players.PlayerAdded:Connect(function(plr)
 	plr.CharacterAdded:Connect(onChar)
 	if plr.Character then onChar(plr.Character) end
 end)
 
--- ========== ground + anchor configuration ==========
-local function configureGroundAndAnchor(root: Instance)
-	if not root then return end
-	-- Sand and HeroSpawn should never fire touches (they were causing damage)
-	local sand      = root:FindFirstChild("Sand", true)
-	local heroSpawn = root:FindFirstChild("HeroSpawn", true)
-
-	if sand and sand:IsA("BasePart") then
-		setGroupPart(sand, "ArenaGround")
-		sand.CanTouch = false
-	end
-	if heroSpawn and heroSpawn:IsA("BasePart") then
-		setGroupPart(heroSpawn, "ArenaGround")
-		heroSpawn.CanTouch = false
-	end
-
-	-- Your transparent anchor
-	local anchor = root:FindFirstChild("07_HeroArenaAnchor", true)
-	if anchor and anchor:IsA("BasePart") then
-		setGroupPart(anchor, "Effects")  -- harmless group
-		anchor.CanTouch   = false
-		-- anchor.CanCollide stays false per your properties
-	end
-end
-
--- Initial pass for any pre-placed heroes in Plots (keep your original bit)
+-- configure plots (ground, anchor, portal, totem)
 local plots = workspace:FindFirstChild("Plots")
-if plots then
-	for _, d in ipairs(plots:GetDescendants()) do
-		if d:IsA("Model") and d.Name == "Hero" then
-			setGroupModel(d, "Hero")
+
+local function configurePlot(plot)
+	if not plot then return end
+
+	-- ground pieces (add/adjust names to match your map)
+	for _,name in ipairs({"Sand","PlotGround","ArenaFloor","HeroSpawn"}) do
+		local p = plot:FindFirstChild(name, true)
+		if p and p:IsA("BasePart") then
+			setPartGroup(p, "ArenaGround")
+			p.CanTouch = false
 		end
 	end
 
-	-- NEW: tag the ground & anchor now
-	for _, plot in ipairs(plots:GetChildren()) do
-		configureGroundAndAnchor(plot)
+	-- arena hero spawn anchor
+	local anchor = plot:FindFirstChild("07_HeroArenaAnchor", true)
+	if anchor and anchor:IsA("BasePart") then
+		setPartGroup(anchor, "Effects")
+		anchor.CanTouch = false
+		-- keep CanCollide = false (as you have it)
 	end
 
-	-- NEW: keep it robust if parts get replaced during play
+	-- portal arches/pillars: mark as ArenaProps
+	local portalModel = plot:FindFirstChild("Portal", true)
+	if portalModel and portalModel:IsA("Model") then
+		setModelGroup(portalModel, "ArenaProps")
+		for _,d in ipairs(portalModel:GetDescendants()) do
+			if d:IsA("BasePart") then
+				-- black hole / VFX spheres should not collide at all
+				local n = d.Name:lower()
+				if n:find("blackhole") or n:find("fx") then
+					d.CanCollide = false
+					d.CanTouch   = false
+				end
+			end
+		end
+	end
+
+	-- Totem gem acts like an effect (no touches/collisions)
+	local totem = plot:FindFirstChild("ArenaTotem", true)
+	if totem and totem:IsA("Model") then
+		local gem = totem:FindFirstChild("Gem", true)
+		if gem and gem:IsA("BasePart") then
+			setPartGroup(gem, "Effects")
+			gem.CanTouch = false
+		end
+	end
+end
+
+if plots then
+	for _,plot in ipairs(plots:GetChildren()) do
+		if plot:IsA("Model") then configurePlot(plot) end
+	end
 	plots.DescendantAdded:Connect(function(d)
 		if not d:IsA("BasePart") then return end
-		if d.Name == "Sand" or d.Name == "HeroSpawn" then
-			setGroupPart(d, "ArenaGround")
-			d.CanTouch = false
+		if d.Name == "Sand" or d.Name == "PlotGround" or d.Name == "ArenaFloor" or d.Name == "HeroSpawn" then
+			setPartGroup(d, "ArenaGround"); d.CanTouch = false
 		elseif d.Name == "07_HeroArenaAnchor" then
-			setGroupPart(d, "Effects")
-			d.CanTouch = false
+			setPartGroup(d, "Effects"); d.CanTouch = false
+		elseif d.Parent and d.Parent:IsA("Model") and d.Parent.Name == "Portal" then
+			setPartGroup(d, "ArenaProps")
 		end
 	end)
 end

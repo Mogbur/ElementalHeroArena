@@ -70,7 +70,8 @@ function EnemyFactory.spawn(kind, ownerUserId, lookCF, groundY, parentFolder, op
 	m:PivotTo(lookCF)
 	Common.sanitize(m, { hipHeightOverride = def.hipHeightOverride or 0.1 })
 	Common.colorByElement(m, opts.elem)
-	Common.flushToGroundByRoot(m, groundY, 0.01)
+	local hover = (opts.attributes and tonumber(opts.attributes.hoverY)) or 0
+	Common.flushToGroundByRoot(m, groundY + hover, 0.05)
 	Common.ownToServer(m)
 	Common.tag(m)
 
