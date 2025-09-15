@@ -197,8 +197,22 @@ function Forge:Buy(plr, wave, choice)
     elseif choice.type=="UTIL" then
         if money.Value < offers.util.price then return false,"poor" end
         money.Value -= offers.util.price
-        if offers.util.id=="REROLL" then run.rerolls += 1 end
-        return true, {util=offers.util.id}
+
+        if offers.util.id == "REROLL" then
+            run.rerolls += 1
+
+        elseif offers.util.id == "RECOVER" then
+            -- heal hero on this plot up to 60%
+            local plot = choice.plot
+            local hero = plot and plot:FindFirstChild("Hero", true)
+            local hum  = hero and hero:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local target = math.floor(hum.MaxHealth * 0.60 + 0.5)
+                if hum.Health < target then hum.Health = target end
+            end
+        end
+
+        return true, { util = offers.util.id }
     end
     return false,"bad_choice"
 end

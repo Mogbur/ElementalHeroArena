@@ -1647,6 +1647,24 @@ local function runFightLoop(plot, portal, owner, opts)
 		if hum and hum.Health > 0 then
 			postWaveHeal(hero)
 		end
+		-- === Checkpoint forge ===
+		do
+			local nextWave = plot:GetAttribute("CurrentWave") or 1
+			if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
+				-- always spawn at checkpoints
+				Forge:SpawnShrine(plot)
+
+				if autoChain then
+					-- give a short buy window when auto-chaining
+					task.delay(8, function()
+						pcall(function() Forge:DespawnShrine(plot) end)
+					end)
+				end
+			else
+				-- not a checkpoint: make sure it’s gone
+				pcall(function() Forge:DespawnShrine(plot) end)
+			end
+		end
 
 		-- 👇 NEW: split behavior based on AutoChain
 		if autoChain then

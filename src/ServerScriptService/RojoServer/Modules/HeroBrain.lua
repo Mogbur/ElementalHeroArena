@@ -268,7 +268,7 @@ function Brain.attach(hero: Model)
 		local xp  = tonumber(plr and plr:GetAttribute("StyleXP_"..styleId)) or 0
 		B = Mastery.bonuses(styleId, xp)
 
-		-- compute canonical BASE from either attribute or last known style mul
+		-- canonical BASE max HP (remembered across style swaps)
 		local lastMul = math.max(0.01, (plr and plr:GetAttribute("LastHpMul")) or 1)
 		local baseMax = hero:GetAttribute("BaseMaxHealth")
 		if not baseMax or baseMax <= 0 then
@@ -276,7 +276,15 @@ function Brain.attach(hero: Model)
 		end
 		baseMax = math.max(1, math.floor(baseMax + 0.5))
 
-		local newMax = math.floor(baseMax * (S.hpMul or 1.0) + 0.5)
+		-- === Core multipliers from the plot (HP & Haste) ===
+		local plot     = hero:FindFirstAncestorWhichIsA("Model")
+		local coreId   = plot and plot:GetAttribute("CoreId")
+		local coreTier = tonumber(plot and plot:GetAttribute("CoreTier")) or 0
+		local coreHpMul  = (coreId == "HP")  and (1 + 0.06 * coreTier) or 1
+		local coreSpdMul = (coreId == "HST") and (1 + 0.06 * coreTier) or 1
+
+		-- Max HP = base * style * core(HP)
+		local newMax = math.floor(baseMax * (S.hpMul or 1.0) * coreHpMul + 0.5)
 		local ratio  = hum.Health / math.max(1, hum.MaxHealth)
 
 		-- whitelist this write so guards don’t “refund” it
@@ -289,10 +297,13 @@ function Brain.attach(hero: Model)
 
 		if plr then plr:SetAttribute("LastHpMul", S.hpMul or 1.0) end
 
+		-- melee base damage from style (your old logic)
 		local baseMelee = 15
 		MELEE_DAMAGE   = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
+
+		-- Basic swing cadence = base / (style * core(Haste))
 		local baseSwing = 0.60
-		SWING_COOLDOWN = baseSwing / math.max(0.2, (S.spdMul or 1.0))
+		SWING_COOLDOWN = baseSwing / math.max(0.2, (S.spdMul or 1.0) * coreSpdMul)
 	end
 
 	applyStyle()
@@ -399,14 +410,15 @@ function Brain.attach(hero: Model)
 	-- Server-side damage helper:
 	--  - Blocks self-hits (hero hitting their own rig)
 	--  - Sends ALL damage through Combat.ApplyDamage so spawn guard / friendly-fire / shields / style work
+	-- Server-side damage helper for basics
+	-- Server-side damage helper for basics/skills
 	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?, opts)
 		if not target or amount <= 0 then return 0, false end
-
 		opts = opts or {}
 		local isCrit = false
 		local dealt  = amount
 
-		-- Normal crits unless disabled
+		-- normal crits unless disabled (this is your generic crit system)
 		if allowCrit ~= false then
 			local chance, mult = getCritParams()
 			if (opts.forceCrit) or (math.random() < chance) then
@@ -415,38 +427,26 @@ function Brain.attach(hero: Model)
 			end
 		end
 
-		-- Resolve model & root part
-		local targetModel = target:IsA("Model") and target or target.Parent
-		local pp = (target:IsA("Model") and (target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart))
+		-- never hit yourself
+		if target:IsDescendantOf(hero) then return 0, false end
+
+		-- route through Combat (pass isBasic from opts)
+		local ownerPlr = Players:GetPlayerByUserId(hero:GetAttribute("OwnerUserId") or 0)
+		local _, applied = Combat.ApplyDamage(ownerPlr, target, dealt, nil, opts.isBasic == true)
+
+		-- damage numbers show what actually applied (after DR/shields/etc.)
+		local m  = target:IsA("Model") and target or target:FindFirstAncestorOfClass("Model")
+		local pp = (m and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart))
 			or (target:IsA("BasePart") and target)
-
-		-- HARD BLOCK: never allow the hero to damage themselves (or parts of themselves)
-		if targetModel == hero or (target:IsDescendantOf(hero)) then
-			return 0, false
-		end
-
-		-- Apply damage via Combat (marks “basic attack” when true)
-		local hum = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
-		if hum then
-			-- If you know the source player, pass them; nil is fine but friendly-fire check needs a player to be meaningful.
-			local ownerPlr = Players:GetPlayerByUserId(hero:GetAttribute("OwnerUserId") or 0)
-			Combat.ApplyDamage(ownerPlr, targetModel, dealt, nil, true)  -- true = basic
-		else
-			-- Generic destructible with Health attribute
-			local hp = target:GetAttribute("Health")
-			if hp then target:SetAttribute("Health", math.max(0, hp - dealt)) end
-		end
-
-		-- Damage numbers
-		if pp then
-			local shown = math.floor(dealt + 0.5)
+		if pp and applied and applied > 0 then
+			local shown = math.floor(applied + 0.5)
 			if isCrit or (opts and opts.displayCrit) then
 				DamageNumbers.pop(pp, shown, Color3.fromRGB(255,90,90), {duration=1.35, rise=10, sizeMul=1.35})
 			else
 				DamageNumbers.pop(pp, shown, color or Color3.fromRGB(255,235,130))
 			end
 		end
-		return dealt, isCrit
+		return applied or 0, isCrit
 	end
 
 	local function applyHeal(model: Instance, amount: number)
@@ -708,38 +708,39 @@ function Brain.attach(hero: Model)
 		end
 	end
 
-	-- ===== REPLACE tryMelee WITH THIS (inside Brain.attach) =====
 	local bowSwingCount = 0
 	local lastStunAt = {} -- [Instance] = time()
 
 	local function tryMelee(target: Instance): boolean
+		-- Resolve target position early; bail if we somehow lost it.
 		local p = targetPos(target); if not p then return false end
 		local dist = (p - hrp.Position).Magnitude
 
-		-- --- Bow: ranged “basic”
+		-- =========================
+		-- BOW: ranged "basic" shot
+		-- =========================
 		if styleId == "Bow" then
 			local basicRange = T.BOW_BASIC_RANGE or T.FIRE_RANGE or 90
 			if dist > basicRange then return false end
 
+			-- swing rate limit
 			local last = hero:GetAttribute("__lastSwing") or 0
 			if time() - last < SWING_COOLDOWN then return true end
 			hero:SetAttribute("__lastSwing", time())
 
+			-- face, mark a swing tick (helps anims/IK), then fire a projectile
 			faceTowards(hrp, p)
 			hero:SetAttribute("MeleeTick", os.clock())
 
-			-- Surge every Nth shot (bonus damage display, not a real crit)
+			-- every Nth shot we’ll *only* flag a visual “surge” (red number),
+			-- but DO NOT pre-multiply damage here—Combat handles Bow cadence/bonus.
 			local surge = false
 			if S.forcedCritNth and S.forcedCritNth > 0 then
 				bowSwingCount += 1
-				if (bowSwingCount % S.forcedCritNth) == 0 then surge = true end
-			end
-			local dmg = MELEE_DAMAGE
-			if surge and S.forcedCritBonus and S.forcedCritBonus ~= 0 then
-				dmg = dmg * (1 + S.forcedCritBonus)
+				surge = (bowSwingCount % S.forcedCritNth) == 0
 			end
 
-			-- Simple “bolt”
+			-- simple projectile to the target point
 			local from = hrp.Position + Vector3.new(0, 2, 0)
 			local dir  = (p - from).Unit
 			local bolt = Instance.new("Part")
@@ -749,7 +750,7 @@ function Brain.attach(hero: Model)
 			bolt.CFrame = CFrame.lookAt(from, p)
 			bolt.Parent = workspace
 
-			local speed = 110
+			local speed  = 110
 			local flight = dist / speed
 			task.spawn(function()
 				local t0 = time()
@@ -757,15 +758,24 @@ function Brain.attach(hero: Model)
 					bolt.CFrame = bolt.CFrame + dir * speed * task.wait()
 				end
 				bolt:Destroy()
-				-- allowCrit=false (surge is already included in dmg)
-				applyDamage(target, dmg, Color3.fromRGB(255,235,130), false, { displayCrit = surge })
+
+				-- IMPORTANT:
+				--  - mark this as a BASIC hit so Combat applies Bow cadence/bonus.
+				--  - no pre-mult for surge; pass displayCrit just for red numbers.
+				applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), false, {
+					isBasic     = true,
+					displayCrit = surge,
+				})
 			end)
 			return true
 		end
 
-		-- --- Sword / Mace: true melee
-		if dist > ATTACK_RANGE then return false end
+		-- ============================
+		-- SWORD / MACE: true melee hit
+		-- ============================
+		if dist > ATTACK_RANGE then return false end  -- uses top-level ATTACK_RANGE
 
+		-- swing rate limit
 		local last = hero:GetAttribute("__lastSwing") or 0
 		if time() - last < SWING_COOLDOWN then return true end
 		hero:SetAttribute("__lastSwing", time())
@@ -773,10 +783,11 @@ function Brain.attach(hero: Model)
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
 
-		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true)
+		-- mark as BASIC so style bonuses (e.g., Mace flags) apply in Combat
+		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true, { isBasic = true })
 
-		-- Mace stun (unchanged)
-		if styleId == "Mace" and B and B.stunChance and B.stunChance > 0 then
+		-- optional: Mace stun (unchanged)
+		if styleId == "Mace" and B and (B.stunChance or 0) > 0 then
 			local now = time()
 			local lastS = lastStunAt[target] or 0
 			if (now - lastS) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
@@ -789,10 +800,11 @@ function Brain.attach(hero: Model)
 					local pre = h2.WalkSpeed; h2.WalkSpeed = 0
 					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
 					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
-					task.delay(dur, function() if h2 and h2.Parent then h2.WalkSpeed = pre end end)
+					task.delay(dur, function() if h2.Parent and h2.Health > 0 then h2.WalkSpeed = pre end end)
 				end
 			end
 		end
+
 		return true
 	end
 

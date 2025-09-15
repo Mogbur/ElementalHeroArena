@@ -44,7 +44,7 @@ end
 -- ==================== shielding ====================
 -- Uses attributes:
 --   ShieldHP (number)        - remaining pool
---   ShieldUntil (os.clock()) - absolute expiry time (seconds)
+--   ShieldExpireAt (os.clock()) - absolute expiry time (seconds)
 local function absorbShield(target, amount)
 	local m = modelOf(target)
 	if not (m and amount and amount > 0) then return amount end
@@ -67,7 +67,7 @@ local function absorbShield(target, amount)
 		return 0
 	else
 		m:SetAttribute("ShieldHP", 0)
-		m:SetAttribute("ShieldUntil", 0)
+		m:SetAttribute("ShieldExpireAt", 0)
 		return remain
 	end
 end
@@ -152,37 +152,56 @@ end
 
 -- ==================== damage APIs ====================
 function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasic)
-	-- style: outgoing first (attacker)
-	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
-	if not target or not baseDamage or baseDamage <= 0 then return false, 0 end
+	if not target or not baseDamage or baseDamage <= 0 then
+		return false, 0
+	end
 
-	-- Allow part or model; prefer enemy model if a part was passed
+	-- Prefer an enemy/hero model; accept parts too
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
 
-	-- >>> guard at spawn + friendly fire + mute
-    if model then
-        -- Hard mute while landing in arena (PlotService sets this)
-        if tonumber(model:GetAttribute("DamageMute")) == 1 then
-            return false, 0
-        end
+	-- Outgoing damage from style (Bow cadence / Mace flags, etc.)
+	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
 
-        local now        = os.clock()
-        local inv        = tonumber(model:GetAttribute("InvulnUntil"))     or 0
-        local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
-        if now < math.max(inv, spawnGuard) then
-            return false, 0
-        end
+	-- >>> ATK core (+8% per tier) from the *attacker's* plot (only if a player is the source)
+	do
+		local srcPlot
+		if sourcePlayer then
+			local char = sourcePlayer.Character
+			local p = char and char:FindFirstAncestorWhichIsA("Model")
+			if p and (p:GetAttribute("OwnerUserId") == sourcePlayer.UserId) then
+				srcPlot = p
+			end
+		end
+		if srcPlot and (srcPlot:GetAttribute("CoreId") == "ATK") then
+			local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
+			outDmg = outDmg * (1 + 0.08 * t)
+		end
+	end
+	-- <<< ATK core
 
-        -- Friendly fire: same owner cannot damage their hero
-        local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
-        local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
-        local isHero      = (model:GetAttribute("IsHero") == true)
-                            or (Players:GetPlayerFromCharacter(model) ~= nil)
-        if isHero and srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
-            return false, 0
-        end
-    end
-    -- <<< guard
+	-- ===== spawn-guard / friendly fire / mute =====
+	if model then
+		-- hard mute during landing / guard
+		if tonumber(model:GetAttribute("DamageMute")) == 1 then
+			return false, 0
+		end
+		local now        = os.clock()
+		local inv        = tonumber(model:GetAttribute("InvulnUntil"))     or 0
+		local spawnGuard = tonumber(model:GetAttribute("SpawnGuardUntil")) or 0
+		if now < math.max(inv, spawnGuard) then
+			return false, 0
+		end
+
+		-- block friendly fire on your own hero
+		local targetOwner = tonumber(model:GetAttribute("OwnerUserId")) or 0
+		local srcOwner    = (sourcePlayer and sourcePlayer.UserId) or 0
+		local isHero      = (model:GetAttribute("IsHero") == true)
+			or (Players:GetPlayerFromCharacter(model) ~= nil)
+		if isHero and srcOwner ~= 0 and targetOwner ~= 0 and srcOwner == targetOwner then
+			return false, 0
+		end
+	end
+	-- ==============================================
 
 	-- element multiplier
 	local targetElem = "Neutral"
@@ -193,17 +212,16 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	end
 	local elemMultOut = elemMult(attackElem, targetElem)
 
-	-- damage after elements
+	-- final dmg after elements
 	local dmg = math.max(0, math.floor(outDmg * elemMultOut + 0.5))
 
-	-- If the *target* has a humanoid, apply humanoid damage (with incoming reductions + shield + crit)
+	-- Humanoid target path (includes incoming style DR, shields, crit-dmg multiplier, stun)
 	if model then
 		local hum = model:FindFirstChildOfClass("Humanoid")
 		if hum and hum.Health > 0 then
-			-- incoming reductions (only apply if it's a Player character)
-			-- resolve player owner for "Hero" models too
+			-- target player's incoming reductions (Sword&Shield guard DR etc.)
 			local targetPlayer = Players:GetPlayerFromCharacter(model)
-			if not targetPlayer and model and model:IsA("Model") and (model:GetAttribute("IsHero") == true) then
+			if not targetPlayer and model:IsA("Model") and (model:GetAttribute("IsHero") == true) then
 				local ownerId = tonumber(model:GetAttribute("OwnerUserId")) or 0
 				if ownerId > 0 then
 					targetPlayer = Players:GetPlayerByUserId(ownerId)
@@ -213,10 +231,10 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				dmg = incomingFromStyle(targetPlayer, dmg)
 			end
 
-			-- shield absorb (attributes on target)
+			-- shield absorb (ShieldHP/ShieldExpireAt attrs)
 			local afterShield = absorbShield(model, dmg)
 
-			-- forced-crit extra crit damage (bow cadence)
+			-- forced-crit extra crit damage (Bow cadence mastery)
 			if flags.forcedCrit and (flags.critDmgMul or 1) > 1 then
 				afterShield = math.floor(afterShield * flags.critDmgMul + 0.5)
 			end
@@ -227,7 +245,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				hum:TakeDamage(afterShield)
 			end
 
-			-- optional: mace stun (simple WalkSpeed zero)
+			-- optional: Mace stun
 			if flags.stun and afterShield > 0 then
 				local old = hum.WalkSpeed
 				hum.WalkSpeed = 0
@@ -243,7 +261,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		end
 	end
 
-	-- Generic destructible parts with custom "Health" attribute
+	-- Generic destructibles (BasePart with Health attribute)
 	if typeof(target) == "Instance" and target:IsA("BasePart") then
 		local health = target:GetAttribute("Health")
 		if health then
