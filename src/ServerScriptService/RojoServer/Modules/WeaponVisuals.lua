@@ -3,6 +3,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local WeaponsFolder     = ReplicatedStorage:WaitForChild("Weapons")
+local PhysicsService = game:GetService("PhysicsService")
 
 local M = {}
 
@@ -73,7 +74,7 @@ local function setNoCollide(inst: Instance)
 			d.CanCollide = false
 			d.CanTouch   = false          -- <<< add
             d.Anchored   = false
-            d.CollisionGroup = "Effects"  -- <<< add
+            PhysicsService:SetPartCollisionGroup(d, "Effects")
 		end
 	end
 end

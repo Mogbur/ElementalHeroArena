@@ -451,6 +451,9 @@ local function ensureRemote(name)
 	return r
 end
 
+local RF_Checkpoint: RemoteFunction = Remotes:WaitForChild("CheckpointRF")
+local RE_OpenCP:     RemoteEvent    = Remotes:WaitForChild("OpenCheckpointUI")
+
 local RE_WaveText   = ensureRemote("WaveText")
 ensureRemote("OpenEquipMenu")
 ensureRemote("CastSkillRequest")
@@ -469,6 +472,48 @@ local function setCombatLock(plot, on)
 	if plot and plot:GetAttribute("CombatLocked") ~= (on and true or false) then
 		plot:SetAttribute("CombatLocked", on and true or false)
 	end
+end
+
+-- === Checkpoint RF handler ===
+RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
+    -- verify the player is bound to a plot
+    local plot = playerToPlot[plr]
+    if not (plot and plotToPlayer[plot] == plr) then
+        return false, "no_plot"
+    end
+
+    -- build the unlocked checkpoint list based on last cleared wave
+    local function unlockedList()
+        local current = plot:GetAttribute("CurrentWave") or 1
+        local lastCleared = math.max(0, current - 1)
+        local maxCP = 1
+        if lastCleared >= 1 then
+            maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
+        end
+        local list = {}
+        for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do
+            table.insert(list, w)
+        end
+        return list
+    end
+
+    if verb == "options" then
+        return unlockedList()
+
+    elseif verb == "choose" then
+        local w = tonumber(arg)
+        if not w then return false, "bad_wave" end
+
+        local allowed = {}
+        for _, ww in ipairs(unlockedList()) do allowed[ww] = true end
+        if not allowed[w] then return false, "not_unlocked" end
+
+        plot:SetAttribute("CurrentWave", w)
+        plot:SetAttribute("FullHealOnNextStart", true) -- death => full heal next start
+        return true
+    end
+
+    return false, "bad_verb"
 end
 
 -- === Helpers ===
@@ -1618,6 +1663,22 @@ local function runFightLoop(plot, portal, owner, opts)
 				setCombatLock(plot, true)
 				teleportHeroToIdle(plot)
 				cleanupLeftovers_local()
+				-- wipe run blessings on death
+				local owner = plotToPlayer[plot]
+				pcall(function() Forge:Reset(owner, plot) end)
+
+				-- open the restart picker with unlocked checkpoints
+				if owner then
+					-- build a default list here (same math as RF) for convenience
+					local lastCleared = math.max(0, startWave - 1)
+					local maxCP = 1
+					if lastCleared >= 1 then
+						maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
+					end
+					local opts = {}
+					for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(opts, w) end
+					RE_OpenCP:FireClient(owner, { options = opts, default = cpStart })
+				end
 				task.delay(0.25, function()
 					local h2 = getHero(plot); if not h2 then return end
 					setModelFrozen(h2, false)
@@ -1647,53 +1708,40 @@ local function runFightLoop(plot, portal, owner, opts)
 		if hum and hum.Health > 0 then
 			postWaveHeal(hero)
 		end
-		-- === Checkpoint forge ===
-		do
-			local nextWave = plot:GetAttribute("CurrentWave") or 1
-			if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
-				-- always spawn at checkpoints
-				Forge:SpawnShrine(plot)
+		-- === Checkpoint pause + shrine ===
+		local nextWave = plot:GetAttribute("CurrentWave") or 1
+		if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
+			-- Hard pause at checkpoints: lock combat, park hero at arena start, hide bars
+			setCombatLock(plot, true)
+			setModelFrozen(hero, false)                    -- make sure he can move to the shrine
+			teleportHeroTo(plot, ARENA_HERO_SPAWN)        -- "07_HeroArenaAnchor"
+			hero:SetAttribute("BarsVisible", 0)
+			plot:SetAttribute("AtIdle", false)            -- we're pausing, not going to idle stands
 
-				if autoChain then
-					-- give a short buy window when auto-chaining
-					task.delay(8, function()
-						pcall(function() Forge:DespawnShrine(plot) end)
-					end)
-				end
-			else
-				-- not a checkpoint: make sure it’s gone
-				pcall(function() Forge:DespawnShrine(plot) end)
-			end
+			-- Middle-of-arena shrine
+			Forge:SpawnShrine(plot)
+
+			-- Clean the field; resume is via totem (Start Wave)
+			cleanupLeftovers_local()
+			break
 		end
 
-		-- 👇 NEW: split behavior based on AutoChain
+		-- === Non-checkpoint behavior ===
+		pcall(function() Forge:DespawnShrine(plot) end)
+
 		if autoChain then
-			-- Continuous run: stay in arena and KEEP stands disabled.
-			-- CombatLocked false => stands disabled by our stand logic.
+			-- keep chaining
 			setCombatLock(plot, false)
 			cleanupLeftovers_local()
-
-			-- No idle teleport + no freeze between waves
-			-- (Optionally: brief pause so the heal text is readable)
 			task.wait(BETWEEN_WAVES_DELAY)
 		else
-			-- Manual / totem-driven flow: return to idle and allow stands.
+			-- return to idle (totem-driven)
 			setCombatLock(plot, true)
 			teleportHeroToIdle(plot)
 			freezeHeroAtIdle(plot)
-			-- mark idle state for stands/UI
 			plot:SetAttribute("AtIdle", true)
 			task.defer(pinFrozenHeroToIdleGround, plot)
 			cleanupLeftovers_local()
-
-			local nextWave = plot:GetAttribute("CurrentWave") or 1
-			if ((nextWave - 1) % WAVE_CHECKPOINT_INTERVAL) == 0 then
-				Forge:SpawnShrine(plot)
-			else
-				Forge:DespawnShrine(plot)
-			end
-
-			-- Exit unless player starts again
 			break
 		end
 	end

@@ -11,11 +11,6 @@ local PhysicsService = game:GetService("PhysicsService")
 -- ---------- SINGLETON (prevents duplicate LocalScripts) ----------
 -- _G alone can miss when scripts live in different environments.
 -- This attribute lock lives on ReplicatedStorage and is universal.
-if RS:GetAttribute("SkillVFX_Live") then
-	warn("[SkillVFX] Second copy detected, aborting: ", script:GetFullName())
-	return
-end
-RS:SetAttribute("SkillVFX_Live", true)
 
 if _G.__SKILLVFX_RUNNING then
 	warn("[SkillVFX] duplicate client script; ignoring this copy")
@@ -28,11 +23,6 @@ local Remotes = RS:WaitForChild("Remotes")
 local RE_VFX  = Remotes:WaitForChild("SkillVFX")
 local RE_DMG  = Remotes:WaitForChild("DamageNumbers")
 
--- collision group for VFX parts (never collide)
-pcall(function()
-	PhysicsService:RegisterCollisionGroup("VFX_NoCollide")
-	PhysicsService:CollisionGroupSetCollidable("VFX_NoCollide","Default",false)
-end)
 
 -- Track AquaBarrier visuals per-hero so we can clean them
 -- [Model] = { highlight=Highlight?, bubble=BasePart?, conn=RBXScriptConnection?, shieldBar=BillboardGui?, barConn=RBXScriptConnection? }
@@ -213,7 +203,6 @@ local function aquaBubble(model, pos, dur)
 	bubble.CanQuery = false
 	bubble.CanTouch = false
 	bubble.Massless = true
-	bubble.CollisionGroup = "VFX_NoCollide"
 	bubble.Size = Vector3.new(1,1,1)
 	bubble.CFrame = CFrame.new(pos)
 	bubble.Parent = workspace

@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 local Remotes = RS:WaitForChild("Remotes")
+local RE_HUD  = Remotes:WaitForChild("ForgeHUD")  -- <-- add this
 local lp      = Players.LocalPlayer
 
 local gui = Instance.new("ScreenGui")
@@ -32,4 +33,4 @@ local function setChip(data)
 end
 
 -- server pushes new/clear
-Remotes.ForgeHUD.OnClientEvent:Connect(setChip)
+RE_HUD.OnClientEvent:Connect(setChip)

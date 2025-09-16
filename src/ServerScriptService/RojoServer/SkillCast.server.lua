@@ -259,9 +259,8 @@ local function castAquaBarrier(plr, lv, hero, plot)
 
 	-- attributes for barrier (no ForceField push)
 	hero:SetAttribute("ShieldHP", shield)
-	hero:SetAttribute("ShieldUntil", os.clock() + duration)
-	hero:SetAttribute("ShieldExpireAt", os.clock() + duration)
-	hero:SetAttribute("BarrierUntil", os.clock() + duration)
+	hero:SetAttribute("ShieldExpireAt", os.clock() + duration) -- single source of truth
+	hero:SetAttribute("BarrierUntil",  os.clock() + duration)  -- (if you use this elsewhere)
 
 	popNumber(shield, hpp.Position + Vector3.new(0, 2.2, 0), Color3.fromRGB(90,180,255), "shield")
 
@@ -277,11 +276,10 @@ local function castAquaBarrier(plr, lv, hero, plot)
 	task.delay(duration, function()
 		if hero and hero.Parent then
 			local now = os.clock()
-			if (hero:GetAttribute("ShieldUntil") or 0) <= now then
+			if (hero:GetAttribute("ShieldExpireAt") or 0) <= now then
 				hero:SetAttribute("ShieldHP", 0)
-				hero:SetAttribute("ShieldUntil", 0)
 				hero:SetAttribute("ShieldExpireAt", 0)
-				hero:SetAttribute("BarrierUntil", 0)
+				hero:SetAttribute("BarrierUntil",  0)
 				if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
 			end
 		end

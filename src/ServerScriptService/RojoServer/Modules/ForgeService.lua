@@ -8,6 +8,16 @@ local Forge = {}
 local Run   = setmetatable({}, {__mode="k"})   -- per-player run: { core={id,name,tier}, rerolls=int }
 local ShrineByPlot = {}                        -- plot -> Model (shrine)
 
+local function ensureRE(name)
+	local r = Remotes:FindFirstChild(name)
+	if not r then r = Instance.new("RemoteEvent", Remotes); r.Name = name end
+	return r
+end
+
+local RE_Open  = ensureRE("OpenForgeUI")
+local RE_HUD   = ensureRE("ForgeHUD")
+local RE_Close = ensureRE("CloseForgeUI") -- optional
+
 -- ====== simple tuning (Zone1 base; scale later) ======
 local CORE_POOL = {
     {id="ATK", name="+8% Attack", t1=80,  t2=120, t3=180},
@@ -30,15 +40,33 @@ function Forge:GetRun(plr)
 end
 
 function Forge:Offers(plr, wave)
-    local run = self:GetRun(plr)
-    local core = run.core or {id=CORE_POOL[1].id, tier=1, name=CORE_POOL[1].name}
-    local def; for _,c in ipairs(CORE_POOL) do if c.id==core.id then def=c; break end end
-    local price = (core.tier==1 and def.t1) or (core.tier==2 and def.t2) or def.t3
+	local run = self:GetRun(plr)
 
-    local util = table.clone(UTIL_POOL[math.random(1,#UTIL_POOL)])
-    if util.id=="REROLL" then util.price += (run.rerolls * (util.scaler or 0)) end
+	-- current core (defaults to the first core until player buys/upgrades)
+	local core = run.core or { id = CORE_POOL[1].id, tier = 1, name = CORE_POOL[1].name }
+	local def; for _,c in ipairs(CORE_POOL) do if c.id == core.id then def = c; break end end
+	local price = (core.tier == 1 and def.t1) or (core.tier == 2 and def.t2) or def.t3
+	local coreOffer = { id = core.id, tier = core.tier, name = def.name, price = price }
 
-    return { core={id=core.id, tier=core.tier, name=def.name, price=price}, util=util }
+	-- reuse last util offer in this “open” unless rerolled
+	if not run.offers or run.offersWave ~= wave then
+		local util = table.clone(UTIL_POOL[math.random(1, #UTIL_POOL)])
+		if util.id == "REROLL" then
+			util.price += (run.rerolls * (util.scaler or 0))
+		end
+		run.offers     = { core = coreOffer, util = util }
+		run.offersWave = wave
+	else
+		-- refresh dynamic price for reroll
+		local util = run.offers.util
+		if util and util.id == "REROLL" then
+			util.price = (UTIL_POOL[2].price + (run.rerolls * (UTIL_POOL[2].scaler or 0)))
+		end
+		run.offers.core = coreOffer
+	end
+
+	-- return a copy so callers don’t mutate our cache
+	return { core = table.clone(run.offers.core), util = table.clone(run.offers.util) }
 end
 
 local function ownerPlayer(plot)
@@ -126,7 +154,7 @@ local function portalFx(parent, cframe, mode) -- mode: "appear" or "vanish"
 end
 
 local function findAnchorInPlot(plot)
-    local anchor = plot:FindFirstChild("06_BannerAnchor", true)
+    local anchor = plot:FindFirstChild("ArenaCenter", true)
                  or plot:FindFirstChild("03_HeroAnchor",   true)
                  or plot:FindFirstChild("Arena",           true)
     if anchor and anchor:IsA("Model") then
@@ -140,7 +168,7 @@ function Forge:SpawnShrine(plot)
     local m, base, orb, pp = mkShrineModel()
     local anchor = findAnchorInPlot(plot); if not anchor then return end
 
-    local baseCf = anchor.CFrame * CFrame.new(0, 0.75, -6)
+    local baseCf = anchor.CFrame * CFrame.new(0, 0.75, 0)
     base.CFrame = baseCf
     orb.CFrame  = baseCf * CFrame.new(0, 2.0, 0)
 
@@ -154,7 +182,7 @@ function Forge:SpawnShrine(plot)
     local uid = plot:GetAttribute("OwnerUserId")
     pp.Triggered:Connect(function(plr)
         if uid and plr.UserId ~= uid then return end
-        Remotes.OpenForgeUI:FireClient(plr, plot)
+        RE_Open:FireClient(plr, plot)
     end)
 
     ShrineByPlot[plot] = m
@@ -172,49 +200,92 @@ function Forge:DespawnShrine(plot)
     ShrineByPlot[plot] = nil
 
     local plr = ownerPlayer(plot)
-    if plr then Remotes.ForgeHUD:FireClient(plr, nil) end -- clear HUD chip
+    if plr then
+        RE_HUD:FireClient(plr, nil)
+        RE_Close:FireClient(plr, plot)
+    end
+end
+
+function Forge:Reset(plr, plot)
+	-- forget per-run state
+	Run[plr] = nil
+
+	-- clear plot mirrors used by balance/UI (if you set them)
+	if plot then
+		plot:SetAttribute("CoreId", nil)
+		plot:SetAttribute("CoreTier", 0)
+		plot:SetAttribute("CoreName", nil)
+	end
+
+	-- clear HUD / close UI just in case
+	if plr then
+		RE_HUD:FireClient(plr, nil)
+		RE_Close:FireClient(plr, plot)
+	end
 end
 
 -- ===== purchases =====
-function Forge:Buy(plr, wave, choice)
-    local money = moneyOf(plr); if not money then return false,"no_money" end
-    local offers = self:Offers(plr, wave)
-    local run = self:GetRun(plr)
+function Forge:Buy(plr, _waveFromClient, choice)
+	-- Basic sanity
+	if type(choice) ~= "table" or (choice.type ~= "CORE" and choice.type ~= "UTIL") then
+		return false, "bad_choice"
+	end
 
-    if choice.type=="CORE" then
-        if money.Value < offers.core.price then return false,"poor" end
-        money.Value -= offers.core.price
-        run.core = run.core or {id=offers.core.id, tier=1, name=offers.core.name}
-        run.core.tier = math.min(run.core.tier + 1, 3)
-        local plot = choice.plot
-        if typeof(plot)=="Instance" and plot.Parent then
-            plot:SetAttribute("CoreId",   run.core.id)
-            plot:SetAttribute("CoreTier", run.core.tier)
-            plot:SetAttribute("CoreName", run.core.name)
-            Remotes.ForgeHUD:FireClient(plr, {id=run.core.id, tier=run.core.tier, name=run.core.name})
-        end
-        return true, {core=run.core}
-    elseif choice.type=="UTIL" then
-        if money.Value < offers.util.price then return false,"poor" end
-        money.Value -= offers.util.price
+	-- Validate plot ownership + shrine presence (prevents remote spam)
+	local plot = choice.plot
+	if typeof(plot) ~= "Instance" or not plot.Parent then return false, "bad_plot" end
+	if (plot:GetAttribute("OwnerUserId") or 0) ~= plr.UserId then return false, "not_owner" end
+	if not ShrineByPlot[plot] then return false, "no_shrine" end
 
-        if offers.util.id == "REROLL" then
-            run.rerolls += 1
+	-- Money
+	local money = moneyOf(plr)
+	if not money then return false, "no_money" end
 
-        elseif offers.util.id == "RECOVER" then
-            -- heal hero on this plot up to 60%
-            local plot = choice.plot
-            local hero = plot and plot:FindFirstChild("Hero", true)
-            local hum  = hero and hero:FindFirstChildOfClass("Humanoid")
-            if hum then
-                local target = math.floor(hum.MaxHealth * 0.60 + 0.5)
-                if hum.Health < target then hum.Health = target end
-            end
-        end
+	-- Use the **cached** offers for consistency with the client UI
+	local wave = plot:GetAttribute("CurrentWave") or 1
+	local offers = self:Offers(plr, wave)  -- will reuse cached run.offers
+	local run    = self:GetRun(plr)
 
-        return true, { util = offers.util.id }
-    end
-    return false,"bad_choice"
+	if choice.type == "CORE" then
+		if money.Value < offers.core.price then return false, "poor" end
+		money.Value -= offers.core.price
+
+		-- Upgrade tier (max 3) + persist to plot attributes (for balance hooks)
+		run.core = run.core or { id = offers.core.id, tier = 1, name = offers.core.name }
+		run.core.tier = math.min(run.core.tier + 1, 3)
+
+		plot:SetAttribute("CoreId",   run.core.id)
+		plot:SetAttribute("CoreTier", run.core.tier)
+		plot:SetAttribute("CoreName", run.core.name)
+
+		RE_HUD:FireClient(plr, { id = run.core.id, tier = run.core.tier, name = run.core.name })
+		return true, { core = run.core }
+
+	elseif choice.type == "UTIL" then
+		local util = offers.util
+		if not util then return false, "no_util" end
+		if money.Value < util.price then return false, "poor" end
+		money.Value -= util.price
+
+		if util.id == "REROLL" then
+			run.rerolls += 1
+			-- force a fresh util next Offers() call (same wave is fine)
+			run.offers = nil
+			return true, { util = "REROLL" }
+
+		elseif util.id == "RECOVER" then
+			-- heal hero on this plot up to 60%
+			local hero = plot:FindFirstChild("Hero", true)
+			local hum  = hero and hero:FindFirstChildOfClass("Humanoid")
+			if hum then
+				local target = math.floor(hum.MaxHealth * 0.60 + 0.5)
+				if hum.Health < target then hum.Health = target end
+			end
+			return true, { util = "RECOVER" }
+		end
+
+		return false, "bad_util"
+	end
 end
 
 return Forge
