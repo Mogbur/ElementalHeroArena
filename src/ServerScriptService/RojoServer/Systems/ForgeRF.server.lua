@@ -32,10 +32,10 @@ local RF = ensureRF("ForgeRF")
 -- RF handler
 RF.OnServerInvoke = function(plr, action, ...)
 	if action == "offers" then
-		-- wave is advisory; the service will read plot’s state
 		return Forge:Offers(plr, ...)
 	elseif action == "buy" then
-		local ok, res, why = pcall(function() return Forge:Buy(plr, ...) end)
+		-- NOTE: pass varargs to pcall by calling the function directly
+		local ok, res, why = pcall(Forge.Buy, Forge, plr, ...)
 		if not ok then
 			warn("[ForgeRF] Buy error:", res)
 			return false, "error"
