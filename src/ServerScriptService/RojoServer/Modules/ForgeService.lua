@@ -156,6 +156,16 @@ local function portalFx(parent, cframe, mode) -- mode: "appear" or "vanish"
     end
 end
 
+local function findAnchorInPlot(plot)
+    local anchor = plot:FindFirstChild("ArenaCenter", true)
+                 or plot:FindFirstChild("03_HeroAnchor",   true)
+                 or plot:FindFirstChild("Arena",           true)
+    if anchor and anchor:IsA("Model") then
+        anchor = anchor.PrimaryPart or anchor:FindFirstChildWhichIsA("BasePart")
+    end
+    return anchor
+end
+
 function Forge:SpawnElementalForge(plot: Model)
     if plot:FindFirstChild("ElementalForge") then
         ShrineByPlot[plot] = plot.ElementalForge -- <- compat with Buy() gate
@@ -175,16 +185,6 @@ function Forge:SpawnElementalForge(plot: Model)
 
     ShrineByPlot[plot] = m -- <- compat with Buy() gate
     return m
-end
-
-local function findAnchorInPlot(plot)
-    local anchor = plot:FindFirstChild("ArenaCenter", true)
-                 or plot:FindFirstChild("03_HeroAnchor",   true)
-                 or plot:FindFirstChild("Arena",           true)
-    if anchor and anchor:IsA("Model") then
-        anchor = anchor.PrimaryPart or anchor:FindFirstChildWhichIsA("BasePart")
-    end
-    return anchor
 end
 
 function Forge:SpawnShrine(plot)
