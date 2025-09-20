@@ -1719,15 +1719,12 @@ local function runFightLoop(plot, portal, owner, opts)
 			plot:SetAttribute("AtIdle", false)            -- we're pausing, not going to idle stands
 
 			-- Middle-of-arena shrine
-			Forge:SpawnShrine(plot)
+			Forge:SpawnElementalForge(plot)
 
 			-- Clean the field; resume is via totem (Start Wave)
 			cleanupLeftovers_local()
 			break
 		end
-
-		-- === Non-checkpoint behavior ===
-		pcall(function() Forge:DespawnShrine(plot) end)
 
 		if autoChain then
 			-- keep chaining
@@ -1756,7 +1753,6 @@ local function startWaveCountdown(plot, portal, owner)
 	local totem = findTotem(plot); if not (totem and totem.gem) then return end
 
 	setCombatLock(plot, true)
-	pcall(function() Forge:DespawnShrine(plot) end)
 
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
 

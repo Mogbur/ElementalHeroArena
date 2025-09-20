@@ -8,6 +8,9 @@ local Forge = {}
 local Run   = setmetatable({}, {__mode="k"})   -- per-player run: { core={id,name,tier}, rerolls=int }
 local ShrineByPlot = {}                        -- plot -> Model (shrine)
 
+local ServerStorage = game:GetService("ServerStorage")
+local Templates = ServerStorage:WaitForChild("Templates")
+
 local function ensureRE(name)
 	local r = Remotes:FindFirstChild(name)
 	if not r then r = Instance.new("RemoteEvent", Remotes); r.Name = name end
@@ -153,6 +156,27 @@ local function portalFx(parent, cframe, mode) -- mode: "appear" or "vanish"
     end
 end
 
+function Forge:SpawnElementalForge(plot: Model)
+    if plot:FindFirstChild("ElementalForge") then
+        ShrineByPlot[plot] = plot.ElementalForge -- <- compat with Buy() gate
+        return plot.ElementalForge
+    end
+    local tpl = Templates:FindFirstChild("ElementalForgeTemplate")
+    if not tpl then return nil end
+    local m = tpl:Clone()
+    m.Name = "ElementalForge"
+
+    local anchor = (findAnchorInPlot and findAnchorInPlot(plot)) or plot.PrimaryPart
+    local cf = (anchor and anchor.CFrame) or plot:GetPivot()
+    m:PivotTo(cf)
+    m.Parent = plot
+
+    plot:SetAttribute("ForgeUnlocked", true)
+
+    ShrineByPlot[plot] = m -- <- compat with Buy() gate
+    return m
+end
+
 local function findAnchorInPlot(plot)
     local anchor = plot:FindFirstChild("ArenaCenter", true)
                  or plot:FindFirstChild("03_HeroAnchor",   true)
@@ -190,12 +214,19 @@ function Forge:SpawnShrine(plot)
 end
 
 function Forge:DespawnShrine(plot)
+    -- If the new forge is present, DO NOT destroy it (VFX handles hide).
+    local ef = plot:FindFirstChild("ElementalForge")
+    if ef then
+        -- keep ShrineByPlot in sync but don’t delete the forge
+        ShrineByPlot[plot] = ef
+        return
+    end
+
+    -- legacy cleanup for the old shrine
     local m = ShrineByPlot[plot]
     if not m then return end
     local base = m:FindFirstChild("Base")
-    if base then
-        portalFx(plot, base.CFrame, "vanish")
-    end
+    if base then portalFx(plot, base.CFrame, "vanish") end
     m:Destroy()
     ShrineByPlot[plot] = nil
 
