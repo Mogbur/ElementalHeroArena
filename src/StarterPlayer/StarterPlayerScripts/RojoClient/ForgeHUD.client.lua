@@ -25,7 +25,7 @@ chip.Parent = gui
 
 local function setChip(data)
     if data and data.id then
-        chip.Text = string.format("Core: %s  T%d", data.name or data.id, data.tier or 1)
+        chip.Text = string.format("Core: %s  T%d", data.name or data.id, data.tier or 0)
         chip.Visible = true
     else
         chip.Visible = false

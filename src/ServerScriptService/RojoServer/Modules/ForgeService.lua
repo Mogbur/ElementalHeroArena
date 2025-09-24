@@ -23,9 +23,9 @@ local RE_Close = ensureRE("CloseForgeUI") -- optional
 
 -- ====== simple tuning (Zone1 base; scale later) ======
 local CORE_POOL = {
-    {id="ATK", name="+8% Attack", t1=80,  t2=120, t3=180},
-    {id="HP",  name="+6% Max HP", t1=80,  t2=120, t3=180},
-    {id="HST", name="+6% Haste",  t1=80,  t2=120, t3=180},
+    {id="ATK", name="+8% Attack", pct=8, t1=80,  t2=120, t3=180},
+    {id="HP",  name="+6% Max HP", pct=6, t1=80,  t2=120, t3=180},
+    {id="HST", name="+6% Haste",  pct=6, t1=80,  t2=120, t3=180},
 }
 local UTIL_POOL = {
     {id="RECOVER", name="Recover to 60% HP", price=120},
@@ -42,16 +42,43 @@ function Forge:GetRun(plr)
     return Run[plr]
 end
 
+-- Returns vertical offset from model pivot to its true bottom face
+local function pivotToBottomOffset(model: Model)
+	local pivotY = model:GetPivot().Position.Y
+	local bottom: BasePart? = model:FindFirstChild("BottomPlate", true)
+	if bottom and bottom:IsA("BasePart") then
+		local bottomY = bottom.Position.Y - (bottom.Size.Y * 0.5)
+		return pivotY - bottomY
+	end
+	-- fallback: bounding box
+	local cf, size = model:GetBoundingBox()
+	local bottomY = cf.Position.Y - (size.Y * 0.5)
+	return pivotY - bottomY
+end
+
 function Forge:Offers(plr, wave)
 	local run = self:GetRun(plr)
 
-	-- current core (defaults to the first core until player buys/upgrades)
-	local core = run.core or { id = CORE_POOL[1].id, tier = 1, name = CORE_POOL[1].name }
-	local def; for _,c in ipairs(CORE_POOL) do if c.id == core.id then def = c; break end end
-	local price = (core.tier == 1 and def.t1) or (core.tier == 2 and def.t2) or def.t3
-	local coreOffer = { id = core.id, tier = core.tier, name = def.name, price = price }
+	-- start at tier 0 until first purchase
+	run.core = run.core or { id = CORE_POOL[1].id, tier = 0, name = CORE_POOL[1].name }
 
-	-- reuse last util offer in this “open” unless rerolled
+	-- lookup the core def
+	local def; for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c break end end
+	if not def then def = CORE_POOL[1] end
+
+	-- price is for the NEXT tier (1..3)
+	local nextTier = math.clamp(run.core.tier + 1, 1, 3)
+	local price = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
+
+	local coreOffer = {
+		id    = run.core.id,
+		name  = def.name,
+		tier  = run.core.tier,  -- current tier (0..3)
+		pct   = def.pct,        -- % per tier (for client display)
+		price = price,          -- price for the next tier (if any)
+	}
+
+	-- util caching (unchanged)
 	if not run.offers or run.offersWave ~= wave then
 		local util = table.clone(UTIL_POOL[math.random(1, #UTIL_POOL)])
 		if util.id == "REROLL" then
@@ -60,7 +87,6 @@ function Forge:Offers(plr, wave)
 		run.offers     = { core = coreOffer, util = util }
 		run.offersWave = wave
 	else
-		-- refresh dynamic price for reroll
 		local util = run.offers.util
 		if util and util.id == "REROLL" then
 			util.price = (UTIL_POOL[2].price + (run.rerolls * (UTIL_POOL[2].scaler or 0)))
@@ -68,7 +94,6 @@ function Forge:Offers(plr, wave)
 		run.offers.core = coreOffer
 	end
 
-	-- return a copy so callers don’t mutate our cache
 	return { core = table.clone(run.offers.core), util = table.clone(run.offers.util) }
 end
 
@@ -166,25 +191,68 @@ local function findAnchorInPlot(plot)
     return anchor
 end
 
+local function snapForgeToGround(m: Model)
+	if not m or not m.Parent then return end
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = { m }  -- ignore only the forge, not the whole plot
+
+	local start = m:GetPivot().Position + Vector3.new(0, 200, 0)
+	local hit = workspace:Raycast(start, Vector3.new(0, -1200, 0), rp)
+	if not hit then return end
+
+	local off = pivotToBottomOffset(m)
+	local pv  = m:GetPivot()
+	-- small fudge to avoid z-fighting on studs
+	local targetY = hit.Position.Y + off + 0.05
+	m:PivotTo(CFrame.new(pv.X, targetY, pv.Z) * CFrame.Angles(pv:ToOrientation()))
+end
+
 function Forge:SpawnElementalForge(plot: Model)
-    if plot:FindFirstChild("ElementalForge") then
-        ShrineByPlot[plot] = plot.ElementalForge -- <- compat with Buy() gate
-        return plot.ElementalForge
-    end
-    local tpl = Templates:FindFirstChild("ElementalForgeTemplate")
-    if not tpl then return nil end
-    local m = tpl:Clone()
-    m.Name = "ElementalForge"
+	-- already present?
+	local existing = plot:FindFirstChild("ElementalForge")
+	if existing then
+		ShrineByPlot[plot] = existing
+		return existing
+	end
 
-    local anchor = (findAnchorInPlot and findAnchorInPlot(plot)) or plot.PrimaryPart
-    local cf = (anchor and anchor.CFrame) or plot:GetPivot()
-    m:PivotTo(cf)
+	-- template
+	local tpl = Templates:FindFirstChild("ElementalForgeTemplate")
+	if not tpl then
+		warn("[ForgeService] No ElementalForgeTemplate in ServerStorage/Templates")
+		return nil
+	end
+
+	-- choose anchor (prefer ArenaCenter)
+	local anchor = plot:FindFirstChild("ArenaCenter", true)
+	              or plot:FindFirstChild("03_HeroAnchor", true)
+	              or plot:FindFirstChild("Arena", true)
+	if anchor and anchor:IsA("Model") then
+		anchor = anchor.PrimaryPart or anchor:FindFirstChildWhichIsA("BasePart")
+	end
+	if not (anchor and anchor:IsA("BasePart")) then
+		anchor = plot.PrimaryPart or plot:FindFirstChildWhichIsA("BasePart")
+	end
+	if not anchor then
+		warn("[ForgeService] No suitable anchor found on plot:", plot.Name)
+		return nil
+	end
+
+	-- clone + parent first so bbox is valid
+	local m = tpl:Clone()
+	m.Name = "ElementalForge"
+	m.Parent = plot
+
+	-- place above the anchor (so we don't intersect), keep arena yaw,
+	-- then snap perfectly to ground below
+	local yaw = select(2, anchor.CFrame:ToOrientation())
+	m:PivotTo(CFrame.new(anchor.Position + Vector3.new(0, 50, 0)) * CFrame.Angles(0, yaw, 0))
+	snapForgeToGround(m)
+
     m.Parent = plot
-
-    plot:SetAttribute("ForgeUnlocked", true)
-
-    ShrineByPlot[plot] = m -- <- compat with Buy() gate
-    return m
+	plot:SetAttribute("ForgeUnlocked", true)
+	ShrineByPlot[plot] = m
+	return m
 end
 
 function Forge:SpawnShrine(plot)
@@ -266,7 +334,14 @@ function Forge:Buy(plr, _waveFromClient, choice)
 	local plot = choice.plot
 	if typeof(plot) ~= "Instance" or not plot.Parent then return false, "bad_plot" end
 	if (plot:GetAttribute("OwnerUserId") or 0) ~= plr.UserId then return false, "not_owner" end
-	if not ShrineByPlot[plot] then return false, "no_shrine" end
+	-- Self-heal the link to the spawned forge/shrine, then verify
+    local ef = plot:FindFirstChild("ElementalForge")
+    if ef then
+        ShrineByPlot[plot] = ShrineByPlot[plot] or ef
+    end
+    if not ShrineByPlot[plot] then
+        return false, "no_shrine"
+    end
 
 	-- Money
 	local money = moneyOf(plr)
@@ -278,12 +353,23 @@ function Forge:Buy(plr, _waveFromClient, choice)
 	local run    = self:GetRun(plr)
 
 	if choice.type == "CORE" then
-		if money.Value < offers.core.price then return false, "poor" end
-		money.Value -= offers.core.price
+		-- compute next tier & price from defs (supports tier 0 start)
+		local runCore = (self:GetRun(plr).core) or { id = offers.core.id, name = offers.core.name, tier = 0 }
+		local def; for _,c in ipairs(CORE_POOL) do if c.id == runCore.id then def = c break end end
+		if not def then def = CORE_POOL[1] end
 
-		-- Upgrade tier (max 3) + persist to plot attributes (for balance hooks)
-		run.core = run.core or { id = offers.core.id, tier = 1, name = offers.core.name }
-		run.core.tier = math.min(run.core.tier + 1, 3)
+		-- **ADD THIS BLOCK**: block purchases at max
+		if runCore.tier >= 3 then
+			return false, "max"
+		end
+
+		local nextTier  = math.clamp(runCore.tier + 1, 1, 3)
+		local nextPrice = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
+		if money.Value < nextPrice then return false, "poor" end
+		money.Value -= nextPrice
+
+		-- apply upgrade
+		run.core = { id = runCore.id, name = runCore.name, tier = math.min(runCore.tier + 1, 3) }
 
 		plot:SetAttribute("CoreId",   run.core.id)
 		plot:SetAttribute("CoreTier", run.core.tier)

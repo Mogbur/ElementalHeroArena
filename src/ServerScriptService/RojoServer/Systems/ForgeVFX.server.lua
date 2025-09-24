@@ -35,26 +35,27 @@ local function firstPart(inst)
 	return nil
 end
 
--- Beams
+-- Beams (drop-in replacement)
 local function mkBeam(a0, a1, c0, c1, width, parent)
 	if not (a0 and a1) then return nil end
 	local b = Instance.new("Beam")
 	b.Attachment0 = a0
 	b.Attachment1 = a1
-	b.FaceCamera = true
-	b.Segments = 40
-	b.Width0 = width
-	b.Width1 = width
-	b.Color = ColorSequence.new(
-		ColorSequenceKeypoint.new(0, c0),
+	b.FaceCamera  = false           -- <-- don’t rotate with the camera
+	b.Segments    = 40
+	b.Width0      = width
+	b.Width1      = width
+	b.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0,   c0),
 		ColorSequenceKeypoint.new(0.5, c0:Lerp(c1, 0.5)),
-		ColorSequenceKeypoint.new(1, c1)
-	)
-	b.Transparency = NumberSequence.new(
-		NumberSequenceKeypoint.new(0, 0),
-		NumberSequenceKeypoint.new(0.5, 0.85),
-		NumberSequenceKeypoint.new(1, 0)
-	)
+		ColorSequenceKeypoint.new(1,   c1)
+	})
+	-- stronger presence: less transparent overall
+	b.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0,   0.10),
+		NumberSequenceKeypoint.new(0.5, 0.40),
+		NumberSequenceKeypoint.new(1,   0.10)
+	})
 	b.Parent = parent
 	return b
 end
@@ -92,77 +93,183 @@ local function plotOf(inst)
 	return nil
 end
 
+-- ======= Fancy portal + full model fade helpers =======
+
+local function setEffectPropsEnabled(inst, on)
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("ParticleEmitter") or d:IsA("Trail") then
+			d.Enabled = on and true or false
+		elseif d:IsA("Beam") then
+			d.Enabled = on and true or false
+		elseif d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+			-- tween brightness for lights (soften pop)
+			local to = on and (d:GetAttribute("__EF_PreBright") or d.Brightness) or 0
+			if on then
+				if d:GetAttribute("__EF_PreBright") == nil then d:SetAttribute("__EF_PreBright", d.Brightness) end
+			end
+			TweenService:Create(d, TweenInfo.new(on and 0.6 or 0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Brightness = to}):Play()
+		elseif d:IsA("Decal") then
+			local to = on and (d:GetAttribute("__EF_PreTrans") or d.Transparency) or 1
+			if on then
+				if d:GetAttribute("__EF_PreTrans") == nil then d:SetAttribute("__EF_PreTrans", d.Transparency) end
+			end
+			TweenService:Create(d, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Transparency = to}):Play()
+		end
+	end
+end
+
+local function fadeForgeBody(Forge: Model, makeVisible: boolean, dur: number)
+	local ti = TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	for _, d in ipairs(Forge:GetDescendants()) do
+		if d:IsA("BasePart") then
+			-- keep combat-safe
+			d.CanCollide = false
+			d.CanQuery   = false
+			-- save original transparency once
+			if d:GetAttribute("__EF_PreTrans") == nil then
+				d:SetAttribute("__EF_PreTrans", d.Transparency)
+			end
+			local to = makeVisible and d:GetAttribute("__EF_PreTrans") or 1
+			TweenService:Create(d, ti, {Transparency = to}):Play()
+		elseif d:IsA("ProximityPrompt") then
+			-- block open while hidden
+			d.Enabled = makeVisible
+		end
+	end
+	-- FX bits (beams/particles/lights/decals)
+	setEffectPropsEnabled(Forge, makeVisible)
+end
+
+-- Big, layered portal burst (3 rings + a soft light pulse)
+local function portalBurst(parent: Instance, cf: CFrame, appear: boolean, totalT: number)
+	local folder = Instance.new("Folder")
+	folder.Name = "EF_PortalFX"
+	folder.Parent = parent
+
+	-- helper to spawn one neon ring
+	local function ring(sizeFrom, sizeTo, transFrom, transTo, t)
+		local p = Instance.new("Part")
+		p.Name = "Ring"
+		p.Shape = Enum.PartType.Cylinder
+		p.Material = Enum.Material.Neon
+		p.Color = Color3.fromRGB(210, 240, 255)
+		tagEffect(p)
+		p.Size = Vector3.new(0.2, sizeFrom, sizeFrom)
+		p.CFrame = cf * CFrame.Angles(0, math.rad(90), 0) -- lay flat
+		p.Transparency = transFrom
+		p.Parent = folder
+		TweenService:Create(p, TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = Vector3.new(0.2, sizeTo, sizeTo),
+			Transparency = transTo,
+		}):Play()
+		Debris:AddItem(p, t + 0.25)
+	end
+
+	-- soft point light pulse at center
+	local lightHolder = Instance.new("Part")
+	lightHolder.Anchored, lightHolder.CanCollide, lightHolder.Transparency = true, false, 1
+	lightHolder.Size = Vector3.new(0.5,0.5,0.5)
+	lightHolder.CFrame = cf
+	lightHolder.Parent = folder
+	local lg = Instance.new("PointLight")
+	lg.Color = Color3.fromRGB(185, 225, 255)
+	lg.Range = 18; lg.Brightness = appear and 0 or 3
+	lg.Parent = lightHolder
+	local lt = TweenService:Create(lg, TweenInfo.new(totalT * 0.6, Enum.EasingStyle.Quad, appear and Enum.EasingDirection.Out or Enum.EasingDirection.In), {
+		Brightness = appear and 3 or 0
+	})
+	lt:Play()
+
+	-- timings: stagger the three rings a bit
+	if appear then
+		ring(2, 12, 0.7, 0.1, totalT*0.55)
+		task.delay(totalT*0.10, function() ring(1.2, 9, 0.9, 0.15, totalT*0.50) end)
+		task.delay(totalT*0.18, function() ring(0.8, 7, 0.95, 0.25, totalT*0.45) end)
+	else
+		-- vanish: pulse outward then collapse to nothing
+		ring(8, 12, 0.2, 0.05, totalT*0.40)
+		task.delay(totalT*0.40, function() ring(12, 0.6, 0.1, 1.0, totalT*0.60) end)
+	end
+
+	Debris:AddItem(folder, totalT + 0.8)
+end
+
+-- one-liner wrappers you’ll call from resync()
+local function showForgeFancy(Forge: Model, appearT: number)
+	appearT = appearT or 1.2
+	portalBurst(Forge, Forge:GetPivot(), true, appearT)
+	fadeForgeBody(Forge, true, appearT)
+end
+
+local function hideForgeFancy(Forge: Model, vanishT: number)
+	vanishT = vanishT or 3.0
+	portalBurst(Forge, Forge:GetPivot(), false, vanishT)
+	fadeForgeBody(Forge, false, vanishT)
+end
+
 -- Core setup for a single ElementalForge model
 local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 	if not (Forge and Forge:IsA("Model")) then return end
 
-	-- Required pieces in the template
-	local EPylon = Forge:FindFirstChild("ElementalPylon")
-	local SmallSphere = EPylon and EPylon:FindFirstChild("ElementalSphere")
-	local FirePylon  = Forge:FindFirstChild("FirePylon")
-	local EarthPylon = Forge:FindFirstChild("EarthPylon")
-	local WaterPylon = Forge:FindFirstChild("WaterPylon")
-	if not (SmallSphere and FirePylon and EarthPylon and WaterPylon) then
+	-- === match your Explorer names ===
+	-- ElementalPylon / ElementalCrystal (with BeamOrigin under it)
+	local EPylon         = Forge:FindFirstChild("ElementalPylon")
+	local CornerCrystal  = EPylon and EPylon:FindFirstChild("ElementalCrystal")
+
+	-- The three stone pylons with anchor attachments
+	local FirePylon      = Forge:FindFirstChild("FirePylon")
+	local EarthPylon     = Forge:FindFirstChild("EarthPylon")
+	local WaterPylon     = Forge:FindFirstChild("WaterPylon")
+
+	if not (EPylon and CornerCrystal and FirePylon and EarthPylon and WaterPylon) then
 		warn("[ForgeVFX] Missing pylon parts under ElementalForge:", Forge:GetFullName())
 		return
 	end
 
-	local origin = SmallSphere:FindFirstChild("BeamOrigin")
-	local aFire  = FirePylon:FindFirstChild("Anchor_Fire")
-	local aEarth = EarthPylon:FindFirstChild("Anchor_Earth")
-	local aWater = WaterPylon:FindFirstChild("Anchor_Water")
+	-- === attachments ===
+	-- BeamOrigin lives under the *corner* crystal (your intent)
+	local origin = CornerCrystal:FindFirstChild("BeamOrigin", true)
+	local aFire  = FirePylon:FindFirstChild("Anchor_Fire",  true)
+	local aEarth = EarthPylon:FindFirstChild("Anchor_Earth", true)
+	local aWater = WaterPylon:FindFirstChild("Anchor_Water", true)
+
+	-- If BeamOrigin is missing, create one on the crystal's first BasePart
+	if not origin then
+		local crystalPart = firstPart(CornerCrystal)
+		if crystalPart then
+			origin = Instance.new("Attachment")
+			origin.Name = "BeamOrigin"
+			origin.Parent = crystalPart
+		end
+	end
+
 	if not (origin and aFire and aEarth and aWater) then
 		warn("[ForgeVFX] Missing attachments (BeamOrigin / Anchor_*).")
 		return
 	end
 
-	-- Make beams
-	local width = 1.8
+	-- === beams (corner -> fire, corner -> earth, fire -> water, earth -> water) ===
+	local width  = 1.8
 	local beamSF = mkBeam(origin, aFire,  WHITE, FIRE,  width, Forge)
 	local beamSE = mkBeam(origin, aEarth, WHITE, EARTH, width, Forge)
 	local beamFW = mkBeam(aFire,  aWater, FIRE,  WATER, width, Forge)
 	local beamEW = mkBeam(aEarth, aWater, EARTH, WATER, width, Forge)
+	local beams  = { beamSF, beamSE, beamFW, beamEW }
 
-	-- Add a white core + glass shell on the sphere
-	local sp = firstPart(SmallSphere)
-	if sp then
-		local core = Instance.new("Part")
-		core.Name = "EF_Core"
-		core.Shape = Enum.PartType.Ball
-		core.Size = Vector3.new(1, 1, 1)
-		core.Material = Enum.Material.Neon
-		core.Color = WHITE
-		tagEffect(core)
-		core.CFrame = sp.CFrame
-		core.Parent = Forge
-
-		local shell = Instance.new("Part")
-		shell.Name = "EF_Shell"
-		shell.Shape = Enum.PartType.Ball
-		shell.Size = Vector3.new(1.8, 1.8, 1.8)
-		shell.Material = Enum.Material.Glass
-		shell.Transparency = 0.5
-		shell.Color = WHITE
-		tagEffect(shell)
-		shell.CFrame = core.CFrame
-		shell.Parent = Forge
-	end
-
-	-- Get the plot up front (so it's in scope for the prompt callback)
-	local plot = plotOf(Forge)
-
-	-- ProximityPrompt to open the existing UI
-	local prompt = SmallSphere:FindFirstChildOfClass("ProximityPrompt")
-	if not prompt then
-		prompt = Instance.new("ProximityPrompt")
-	end
+	-- === prompt lives on the small corner crystal ===
+	local promptParent = firstPart(CornerCrystal)
+	local prompt = (promptParent and promptParent:FindFirstChildOfClass("ProximityPrompt")) or Instance.new("ProximityPrompt")
 	prompt.ActionText = "Pray"
 	prompt.ObjectText = "Elemental Forge"
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.GamepadKeyCode  = Enum.KeyCode.ButtonX   -- PS Cross / Xbox X
 	prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = 10
 	prompt.RequiresLineOfSight = false
-	prompt.Parent = SmallSphere
+	prompt.Parent = promptParent
+
+	-- Get the plot up front (so it's in scope for the prompt callback)
+	local plot = plotOf(Forge)
 
 	if OpenForgeUI then
 		prompt.Triggered:Connect(function(player)
@@ -176,41 +283,24 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		warn("[ForgeVFX] OpenForgeUI RemoteEvent not found.")
 	end
 
-	-- Show/Hide based on CombatLocked (forge visible while locked / between waves)
-	local function setBeamsVisible(on)
-		local alpha = on and 0.0 or 1.0
-		for _, b in ipairs({ beamSF, beamSE, beamFW, beamEW }) do
-			if b then
-				b.Transparency = NumberSequence.new(
-					NumberSequenceKeypoint.new(0, alpha),
-					NumberSequenceKeypoint.new(1, alpha)
-				)
-			end
-		end
-	end
-
-	local function show()
-		setBeamsVisible(true)
-		portalPulse(Forge:GetPivot(), true, 0.7, Forge)
-	end
-
-	local function hide()
-		setBeamsVisible(false)
-		portalPulse(Forge:GetPivot(), false, 0.8, Forge)
-	end
-
+		-- === visibility + portal tied to CombatLocked ===
 	local function resync()
+		local plot = plotOf(Forge)
 		if not plot then return end
-		-- Visible while CombatLocked == true (pause/checkpoint)
-		if plot:GetAttribute("CombatLocked") == true then
-			show()
+		local locked = (plot:GetAttribute("CombatLocked") == true)
+		if locked then
+			-- BETWEEN waves (checkpoint, before starting): show with portal
+			showForgeFancy(Forge, 1.2)
 		else
-			hide()
+			-- DURING waves: hide whole forge with a big 3s vanish
+			hideForgeFancy(Forge, 3.0)
 		end
 	end
 
-	if plot then
-		plot:GetAttributeChangedSignal("CombatLocked"):Connect(resync)
+	-- run once and wire to future changes
+	local plotForSignal = plotOf(Forge)
+	if plotForSignal then
+		plotForSignal:GetAttributeChangedSignal("CombatLocked"):Connect(resync)
 	end
 	task.defer(resync)
 end
