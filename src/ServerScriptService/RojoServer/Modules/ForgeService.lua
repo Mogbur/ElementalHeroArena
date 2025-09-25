@@ -57,44 +57,44 @@ local function pivotToBottomOffset(model: Model)
 end
 
 function Forge:Offers(plr, wave)
-	local run = self:GetRun(plr)
+    local run = self:GetRun(plr)
 
-	-- start at tier 0 until first purchase
-	run.core = run.core or { id = CORE_POOL[1].id, tier = 0, name = CORE_POOL[1].name }
+    -- start at tier 0 until first purchase
+    run.core = run.core or { id = CORE_POOL[1].id, tier = 0, name = CORE_POOL[1].name }
 
-	-- lookup the core def
-	local def; for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c break end end
-	if not def then def = CORE_POOL[1] end
+    -- lookup the core def
+    local def; for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c break end end
+    if not def then def = CORE_POOL[1] end
 
-	-- price is for the NEXT tier (1..3)
-	local nextTier = math.clamp(run.core.tier + 1, 1, 3)
-	local price = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
+    -- price is for the NEXT tier (1..3)
+    local nextTier = math.clamp(run.core.tier + 1, 1, 3)
+    local price = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
 
-	local coreOffer = {
-		id    = run.core.id,
-		name  = def.name,
-		tier  = run.core.tier,  -- current tier (0..3)
-		pct   = def.pct,        -- % per tier (for client display)
-		price = price,          -- price for the next tier (if any)
-	}
+    local coreOffer = {
+        id    = run.core.id,
+        name  = def.name,
+        tier  = run.core.tier,  -- current (0..3)
+        pct   = def.pct,        -- % per tier (client uses for now→next)
+        price = price,          -- price for next tier
+    }
 
-	-- util caching (unchanged)
-	if not run.offers or run.offersWave ~= wave then
-		local util = table.clone(UTIL_POOL[math.random(1, #UTIL_POOL)])
-		if util.id == "REROLL" then
-			util.price += (run.rerolls * (util.scaler or 0))
-		end
-		run.offers     = { core = coreOffer, util = util }
-		run.offersWave = wave
-	else
-		local util = run.offers.util
-		if util and util.id == "REROLL" then
-			util.price = (UTIL_POOL[2].price + (run.rerolls * (UTIL_POOL[2].scaler or 0)))
-		end
-		run.offers.core = coreOffer
-	end
+    -- util caching (unchanged)
+    if not run.offers or run.offersWave ~= wave then
+        local util = table.clone(UTIL_POOL[math.random(1, #UTIL_POOL)])
+        if util.id == "REROLL" then
+            util.price += (run.rerolls * (util.scaler or 0))
+        end
+        run.offers     = { core = coreOffer, util = util }
+        run.offersWave = wave
+    else
+        local util = run.offers.util
+        if util and util.id == "REROLL" then
+            util.price = (UTIL_POOL[2].price + (run.rerolls * (UTIL_POOL[2].scaler or 0)))
+        end
+        run.offers.core = coreOffer
+    end
 
-	return { core = table.clone(run.offers.core), util = table.clone(run.offers.util) }
+    return { core = table.clone(run.offers.core), util = table.clone(run.offers.util) }
 end
 
 local function ownerPlayer(plot)

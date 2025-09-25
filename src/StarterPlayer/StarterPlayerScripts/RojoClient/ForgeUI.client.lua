@@ -82,7 +82,7 @@ close.Parent = root
 
 local body = Instance.new("Frame")
 body.BackgroundTransparency = 1
-body.Size = UDim2.new(1, -20, 1, -60)
+body.Size = UDim2.new(1, -20, 1, -78)
 body.Position = UDim2.new(0, 10, 0, 50)
 body.Parent = root
 
@@ -91,6 +91,21 @@ list.FillDirection = Enum.FillDirection.Horizontal
 list.HorizontalAlignment = Enum.HorizontalAlignment.Center
 list.VerticalAlignment   = Enum.VerticalAlignment.Center
 list.Padding = UDim.new(0, 10)
+
+local hint = Instance.new("TextLabel")
+hint.Name = "Hint"
+hint.BackgroundTransparency = 1
+hint.Font = Enum.Font.Gotham
+hint.TextColor3 = Color3.fromRGB(150, 160, 200)
+hint.TextScaled = true
+hint.Text = "Core upgrades reset on death."
+hint.AnchorPoint = Vector2.new(0.5, 1)
+hint.Position = UDim2.new(0.5, 0, 1, -6)
+hint.Size = UDim2.new(1, -24, 0, 18)
+local hintSize = Instance.new("UITextSizeConstraint", hint)
+hintSize.MinTextSize = 12
+hintSize.MaxTextSize = 16
+hint.Parent = root
 
 -- return real references so we never index strings
 local function makeCard(titleText)
@@ -126,11 +141,14 @@ local function makeCard(titleText)
 	subLbl.BackgroundTransparency = 1
 	subLbl.Font = Enum.Font.Gotham
 	subLbl.TextScaled = true
-	subLbl.TextWrapped = true           -- << add this
+	subLbl.LineHeight = 1.08
 	subLbl.TextColor3 = Color3.fromRGB(170,180,220)
 	subLbl.Text = ""
-	subLbl.Size = UDim2.new(1, -16, 0, 44)  -- << was 28; give it more height
+	subLbl.Size = UDim2.new(1, -16, 0, 62)          -- was 28
 	subLbl.Position = UDim2.new(0, 8, 0, 80)
+	local subSize = Instance.new("UITextSizeConstraint", subLbl)
+	subSize.MinTextSize = 16
+	subSize.MaxTextSize = 24                          -- a touch smaller than “+8% Attack”
 	subLbl.Parent = card
 
 	local buyBtn = Instance.new("TextButton")

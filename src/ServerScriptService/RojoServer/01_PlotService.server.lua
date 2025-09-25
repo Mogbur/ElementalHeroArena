@@ -94,6 +94,7 @@ local DEFAULT_ATTRS = {
 	AutoChain    = true,
 	CritChance   = 0.03,
 	CritMult     = 2.0,
+	WaveStarting = false,
 }
 local START_INVULN_SEC = 0.90 -- was 0.35
 
@@ -1693,7 +1694,9 @@ local function runFightLoop(plot, portal, owner, opts)
 
 		rewardAndAdvance(plot)
 		if plr then RE_WaveText:FireClient(plr, {kind="result", result="Victory", wave=startWave}) end
-		-- (we REMOVE the immediate setCombatLock(true) here)
+
+		-- keep forge hidden between non-checkpoint waves
+		setCombatLock(plot, false)
 
 		local ttl = time() - t0
 		if hum then
@@ -1858,7 +1861,11 @@ local function startWaveCountdown(plot, portal, owner)
 
 	-- Lock combat during the tiny invuln window, then release
 	setCombatLock(plot, true)
-	task.delay(START_INVULN_SEC, function() setCombatLock(plot, false) end)
+	task.delay(START_INVULN_SEC, function()
+		setCombatLock(plot, false)
+		-- countdown is over; make sure ForgeVFX knows we're no longer “starting”
+		plot:SetAttribute("WaveStarting", false)
+	end)
 
 	-- IK per weapon
 	do
@@ -1908,6 +1915,9 @@ local function createTotemPrompt(plot, owner)
 		if (now - (lastTriggered[plot] or 0)) < FIGHT_COOLDOWN_SEC then return end
 		lastTriggered[plot] = now
 
+		-- tell ForgeVFX to start vanishing immediately on totem press
+		plot:SetAttribute("WaveStarting", true)
+
 		fightBusy[plot] = true
 		cleanupLeftovers(plot)
 		local portal = getAnchor(plot, PORTAL_ANCHOR) or plot.PrimaryPart or totem.gem
@@ -1915,6 +1925,7 @@ local function createTotemPrompt(plot, owner)
 		cleanupLeftovers(plot)
 		fightBusy[plot] = false
 	end
+
 
 	pp.Triggered:Connect(begin)
 

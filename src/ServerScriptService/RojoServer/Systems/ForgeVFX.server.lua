@@ -283,16 +283,20 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		warn("[ForgeVFX] OpenForgeUI RemoteEvent not found.")
 	end
 
-		-- === visibility + portal tied to CombatLocked ===
+	-- === visibility + portal tied to CombatLocked / WaveStarting ===
 	local function resync()
 		local plot = plotOf(Forge)
 		if not plot then return end
-		local locked = (plot:GetAttribute("CombatLocked") == true)
-		if locked then
-			-- BETWEEN waves (checkpoint, before starting): show with portal
+
+		-- When the player presses the totem we want to hide *immediately*:
+		-- WaveStarting == true means "totem pressed, wave about to begin"
+		local waveStarting = (plot:GetAttribute("WaveStarting") == true)
+		local locked       = (plot:GetAttribute("CombatLocked") == true)
+
+		-- Visible only when we're at the checkpoint AND not already starting the wave
+		if locked and not waveStarting then
 			showForgeFancy(Forge, 1.2)
 		else
-			-- DURING waves: hide whole forge with a big 3s vanish
 			hideForgeFancy(Forge, 3.0)
 		end
 	end
@@ -300,7 +304,9 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 	-- run once and wire to future changes
 	local plotForSignal = plotOf(Forge)
 	if plotForSignal then
+		-- Re-run whenever either attribute flips
 		plotForSignal:GetAttributeChangedSignal("CombatLocked"):Connect(resync)
+		plotForSignal:GetAttributeChangedSignal("WaveStarting"):Connect(resync)
 	end
 	task.defer(resync)
 end
