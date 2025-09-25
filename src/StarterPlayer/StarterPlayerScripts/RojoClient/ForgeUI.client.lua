@@ -80,9 +80,22 @@ close.Selectable = true                                  -- NEW
 Instance.new("UICorner", close).CornerRadius = UDim.new(0, 10)
 close.Parent = root
 
+-- Reroll button (persistent)
+local rerollBtn = Instance.new("TextButton")
+rerollBtn.Name = "RerollBtn"
+rerollBtn.Text = "Reroll (40)"
+rerollBtn.Font = Enum.Font.GothamBold
+rerollBtn.TextScaled = true
+rerollBtn.TextColor3 = Color3.fromRGB(255,255,255)
+rerollBtn.Size = UDim2.fromOffset(120, 32)
+rerollBtn.Position = UDim2.new(0, 10, 0, 8)
+rerollBtn.BackgroundColor3 = Color3.fromRGB(52, 58, 92)
+Instance.new("UICorner", rerollBtn).CornerRadius = UDim.new(0, 10)
+rerollBtn.Parent = root
+
 local body = Instance.new("Frame")
 body.BackgroundTransparency = 1
-body.Size = UDim2.new(1, -20, 1, -78)
+body.Size = UDim2.new(1, -20, 1, -92)
 body.Position = UDim2.new(0, 10, 0, 50)
 body.Parent = root
 
@@ -91,21 +104,6 @@ list.FillDirection = Enum.FillDirection.Horizontal
 list.HorizontalAlignment = Enum.HorizontalAlignment.Center
 list.VerticalAlignment   = Enum.VerticalAlignment.Center
 list.Padding = UDim.new(0, 10)
-
-local hint = Instance.new("TextLabel")
-hint.Name = "Hint"
-hint.BackgroundTransparency = 1
-hint.Font = Enum.Font.Gotham
-hint.TextColor3 = Color3.fromRGB(150, 160, 200)
-hint.TextScaled = true
-hint.Text = "Core upgrades reset on death."
-hint.AnchorPoint = Vector2.new(0.5, 1)
-hint.Position = UDim2.new(0.5, 0, 1, -6)
-hint.Size = UDim2.new(1, -24, 0, 18)
-local hintSize = Instance.new("UITextSizeConstraint", hint)
-hintSize.MinTextSize = 12
-hintSize.MaxTextSize = 16
-hint.Parent = root
 
 -- return real references so we never index strings
 local function makeCard(titleText)
@@ -148,7 +146,7 @@ local function makeCard(titleText)
 	subLbl.Position = UDim2.new(0, 8, 0, 80)
 	local subSize = Instance.new("UITextSizeConstraint", subLbl)
 	subSize.MinTextSize = 16
-	subSize.MaxTextSize = 24                          -- a touch smaller than “+8% Attack”
+	subSize.MaxTextSize = 26                          -- a touch smaller than “+8% Attack”
 	subLbl.Parent = card
 
 	local buyBtn = Instance.new("TextButton")
@@ -168,6 +166,59 @@ local function makeCard(titleText)
 	card.Parent = body
 	return {frame = card, name = nameLbl, sub = subLbl, buy = buyBtn}
 end
+
+-- tiny micro-card for Elemental Blessing
+local function makeMicroCard()
+	local card = Instance.new("Frame")
+	card.Name = "BlessCard"
+	card.Size = UDim2.new(1, -16, 0, 46)
+	card.BackgroundColor3 = Color3.fromRGB(30, 35, 56)
+	card.BackgroundTransparency = 0.05
+	Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Name = "Lbl"
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.Gotham
+	lbl.TextScaled = true
+	lbl.TextColor3 = Color3.fromRGB(200,210,255)
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Text = "Elemental Blessing"
+	lbl.Size = UDim2.new(0.6, 0, 1, 0)
+	lbl.Position = UDim2.new(0, 8, 0, 0)
+	lbl.Parent = card
+
+	local buy = Instance.new("TextButton")
+	buy.Name = "Buy"
+	buy.Text = "Buy"
+	buy.Font = Enum.Font.GothamBlack
+	buy.TextScaled = true
+	buy.TextColor3 = Color3.new(1,1,1)
+	buy.Size = UDim2.new(0.35, 0, 0.8, 0)
+	buy.Position = UDim2.new(0.62, 0, 0.1, 0)
+	buy.BackgroundColor3 = Color3.fromRGB(90, 110, 210)
+	Instance.new("UICorner", buy).CornerRadius = UDim.new(0, 8)
+	buy.Parent = card
+
+	card.Size = UDim2.new(1, -20, 0, 46)
+	card.Position = UDim2.new(0, 10, 1, -74)  -- sits just above the footer
+	card.Parent = root
+	return {frame=card, lbl=lbl, buy=buy}
+end
+
+local blessCard = makeMicroCard()
+blessCard.frame.Visible = false
+
+-- footer
+local footer = Instance.new("TextLabel")
+footer.BackgroundTransparency = 1
+footer.Font = Enum.Font.Gotham
+footer.TextScaled = true
+footer.TextColor3 = Color3.fromRGB(160,170,210)
+footer.Text = "Core upgrades stack and reset on death. Utilities last 5 waves."
+footer.Size = UDim2.new(1, -20, 0, 24)
+footer.Position = UDim2.new(0, 10, 1, -26)
+footer.Parent = root
 
 local cardCore = makeCard("Core Upgrade")
 local cardUtil = makeCard("Utility")
@@ -246,6 +297,20 @@ local function refreshOffers()
 	cardUtil.buy.AutoButtonColor = true
 	cardUtil.buy.Active = true
 	cardUtil.buy.BackgroundColor3 = Color3.fromRGB(90,145,95)
+
+	-- reroll label
+	local rr = offers.reroll or { cost = 40, free = false }
+	rerollBtn.Text = rr.free and "Reroll (FREE)" or ("Reroll (%d)"):format(rr.cost)
+
+	-- blessing micro-card
+	if offers.bless then
+		blessCard.frame.Visible = true
+		blessCard.lbl.Text = ("Elemental Blessing: %s"):format(offers.bless.elem)
+		blessCard.buy.Text = ("Buy (%d)"):format(offers.bless.price or 100)
+		blessCard.buy.Active = true
+	else
+		blessCard.frame.Visible = false
+	end
 end
 
 -- buys (define this BEFORE we bind buttons)
@@ -296,9 +361,50 @@ end)
 bind(cardCore.buy, function() doBuy("CORE") end)
 bind(cardUtil.buy, function() doBuy("UTIL") end)
 
+bind(rerollBtn, function()
+	if buying then return end
+	if not plotCurrent or not plotCurrent.Parent then return end
+	buying = true
+	local wave = currentWaveOfPlot(plotCurrent)
+	local ok, res = pcall(function()
+		return RF_Forge:InvokeServer("buy", wave, { type = "REROLL", plot = plotCurrent })
+	end)
+	buying = false
+	if ok and res == true then
+		cardUtil.sub.Text = "Rerolled"
+		task.delay(0.10, refreshOffers)
+	else
+		cardUtil.sub.Text = "Reroll failed"
+	end
+end)
+
+bind(blessCard.buy, function()
+	if buying then return end
+	if not blessCard.frame.Visible then return end
+	if not plotCurrent or not plotCurrent.Parent then return end
+	buying = true
+	local wave = currentWaveOfPlot(plotCurrent)
+	local ok, res = pcall(function()
+		return RF_Forge:InvokeServer("buy", wave, { type = "BLESS", plot = plotCurrent })
+	end)
+	buying = false
+	if ok and res == true then
+		blessCard.lbl.Text = "Blessed!"
+		task.delay(0.15, refreshOffers)
+	else
+		blessCard.lbl.Text = "Failed"
+	end
+end)
+
 -- gamepad left/right between buttons
 cardCore.buy.NextSelectionRight = cardUtil.buy
 cardUtil.buy.NextSelectionLeft  = cardCore.buy
+-- include reroll + bless in focus loop
+rerollBtn.NextSelectionRight = cardCore.buy
+cardCore.buy.NextSelectionLeft = rerollBtn
+cardUtil.buy.NextSelectionRight = blessCard.buy
+blessCard.buy.NextSelectionLeft = cardUtil.buy
+blessCard.buy.NextSelectionRight = close
 
 -- =============== open/close ===============
 RE_Open.OnClientEvent:Connect(function(plot)

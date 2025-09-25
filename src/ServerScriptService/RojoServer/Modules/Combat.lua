@@ -41,6 +41,12 @@ local function findEnemyModel(inst: Instance)
 	return nil
 end
 
+-- segment id from a plot's CurrentWave
+local function segId(plot: Instance)
+	local w = tonumber(plot and plot:GetAttribute("CurrentWave")) or 1
+	return math.floor((w - 1) / 5)
+end
+
 -- ==================== shielding ====================
 -- Uses attributes:
 --   ShieldHP (number)        - remaining pool
@@ -159,22 +165,42 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- Prefer an enemy/hero model; accept parts too
 	local model = target:IsA("Model") and target or findEnemyModel(target) or modelOf(target)
 
-	-- Outgoing damage from style (Bow cadence / Mace flags, etc.)
+	-- Outgoing damage from style...
 	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
 
-	-- >>> ATK core (+8% per tier) from the *attacker's* plot (only if a player is the source)
+	-- Identify source plot once; used by ATK core, Blessing, etc.
+	local srcPlot
+	if sourcePlayer then
+		local char = sourcePlayer.Character
+		local p = char and char:FindFirstChildWhichIsA("Model")
+		if p and (p:GetAttribute("OwnerUserId") == sourcePlayer.UserId) then srcPlot = p end
+	end
+
+	-- Blessing rider: if caller didn't specify an element, default to the active Blessing for this segment
 	do
-		local srcPlot
-		if sourcePlayer then
-			local char = sourcePlayer.Character
-			local p = char and char:FindFirstAncestorWhichIsA("Model")
-			if p and (p:GetAttribute("OwnerUserId") == sourcePlayer.UserId) then
-				srcPlot = p
+		if not attackElem or attackElem == "Neutral" then
+			if srcPlot then
+				local bElem = srcPlot:GetAttribute("BlessingElem")
+				local bSeg  = tonumber(srcPlot:GetAttribute("BlessingExpiresSegId")) or -999
+				if bElem and bSeg == segId(srcPlot) then
+					attackElem = bElem
+				end
 			end
 		end
+	end
+
+	-- >>> ATK core (+8% per tier) from the *attacker's* plot
+	do
 		if srcPlot and (srcPlot:GetAttribute("CoreId") == "ATK") then
 			local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
-			outDmg = outDmg * (1 + 0.08 * t)
+			local coreC = 0.08 * t
+			-- Overcharge (+25% core effect) if active this segment
+			local seg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -999
+			local curSeg = segId(srcPlot)
+			if (srcPlot:GetAttribute("Util_OverchargePct") or 0) > 0 and seg == curSeg then
+				coreC = coreC * 1.25
+			end
+			outDmg = outDmg * (1 + coreC)
 		end
 	end
 	-- <<< ATK core
@@ -245,7 +271,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				hum:TakeDamage(afterShield)
 			end
 
-			-- optional: Mace stun
+			-- Optional: Mace stun
 			if flags.stun and afterShield > 0 then
 				local old = hum.WalkSpeed
 				hum.WalkSpeed = 0
@@ -255,6 +281,30 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 					end
 				end)
 			end
+
+			-- ===== Second Wind (revive once per segment) =====
+			do
+				if hum.Health <= 0 then
+					-- Only for heroes; check plot's segment-scoped counter
+					local plot = model:FindFirstAncestorWhichIsA("Model")
+					if plot and (model:GetAttribute("IsHero") == true
+						or (Players:GetPlayerFromCharacter(model) ~= nil)) then
+						local left = tonumber(plot:GetAttribute("Util_SecondWindLeft")) or 0
+						local utilSeg = tonumber(plot:GetAttribute("UtilExpiresSegId")) or -999
+						if left > 0 and utilSeg == segId(plot) then
+							-- consume + revive to 60% with a tiny i-frame
+							plot:SetAttribute("Util_SecondWindLeft", left - 1)
+							model:SetAttribute("GuardAllowDrop", 1)
+							local targetHP = math.max(1, math.floor(hum.MaxHealth * 0.60 + 0.5))
+							hum.Health = targetHP
+							model:SetAttribute("GuardAllowDrop", 0)
+							model:SetAttribute("InvulnUntil", os.clock() + 1.5)
+							return false, 0
+						end
+					end
+				end
+			end
+			-- ================================================
 
 			local dead = hum.Health <= 0
 			return dead, (afterShield > 0) and afterShield or 0

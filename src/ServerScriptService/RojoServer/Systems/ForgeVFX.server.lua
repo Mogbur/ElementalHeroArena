@@ -226,6 +226,49 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		return
 	end
 
+	-- === Blessing pylon highlight ===
+	local function clearHL()
+		for _, P in ipairs({FirePylon, EarthPylon, WaterPylon}) do
+			local h = P:FindFirstChild("BlessHL"); if h then h:Destroy() end
+			local l = P:FindFirstChild("BlessLight"); if l then l:Destroy() end
+		end
+	end
+
+	local function applyHL(elem)
+		clearHL()
+		local target = (elem=="Fire" and FirePylon) or (elem=="Earth" and EarthPylon) or (elem=="Water" and WaterPylon) or nil
+		if not target then return end
+		local hl = Instance.new("Highlight")
+		hl.Name = "BlessHL"
+		hl.Adornee = target
+		hl.FillTransparency = 0.8
+		hl.OutlineTransparency = 0
+		hl.Parent = target
+
+		local p = firstPart(target)
+		if p then
+			local pl = Instance.new("PointLight")
+			pl.Name = "BlessLight"
+			pl.Range = 12
+			pl.Brightness = 2
+			pl.Color = (elem=="Fire" and FIRE) or (elem=="Earth" and EARTH) or WATER
+			pl.Parent = p
+			-- gentle pulse
+			local ti = TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+			TweenService:Create(pl, ti, {Brightness = 3}):Play()
+		end
+	end
+
+	local plot = plotOf(Forge)
+	local function onBlessChange()
+		if not plot then return end
+		applyHL(plot:GetAttribute("BlessingElem"))
+	end
+	if plot then
+		plot:GetAttributeChangedSignal("BlessingElem"):Connect(onBlessChange)
+		task.defer(onBlessChange)
+	end
+
 	-- === attachments ===
 	-- BeamOrigin lives under the *corner* crystal (your intent)
 	local origin = CornerCrystal:FindFirstChild("BeamOrigin", true)

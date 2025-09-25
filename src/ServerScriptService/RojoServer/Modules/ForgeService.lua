@@ -23,14 +23,31 @@ local RE_Close = ensureRE("CloseForgeUI") -- optional
 
 -- ====== simple tuning (Zone1 base; scale later) ======
 local CORE_POOL = {
-    {id="ATK", name="+8% Attack", pct=8, t1=80,  t2=120, t3=180},
-    {id="HP",  name="+6% Max HP", pct=6, t1=80,  t2=120, t3=180},
-    {id="HST", name="+6% Haste",  pct=6, t1=80,  t2=120, t3=180},
+	{id="ATK", name="+8% Attack", pct=8, t1=80, t2=120, t3=180},
+	{id="HP",  name="+6% Max HP", pct=6, t1=80, t2=120, t3=180},
+	{id="HST", name="+6% Haste",  pct=6, t1=80, t2=120, t3=180},
 }
+
+-- Utilities: lasts 1 segment (5 waves)
 local UTIL_POOL = {
-    {id="RECOVER", name="Recover to 60% HP", price=120},
-    {id="REROLL",  name="Reroll offers",     price=40, scaler=20},
+	{id="RECOVER",     name="Recover to 60% HP",           price=120},
+	{id="SECOND_WIND", name="Second Wind (+1 life)",       price=160},
+	{id="OVERCHARGE",  name="Overcharge (+25% Core)",      price=160},
+	{id="AEGIS",       name="Aegis (Shield ~20% Max HP)",  price=120},
 }
+
+-- Reroll economy per segment
+local REROLL_BASE = 40
+local REROLL_STEP = 20
+
+-- Segment id (0-based is fine for internal math)
+local function segIdFromWave(wave)
+	wave = tonumber(wave) or 1
+	return math.floor((wave - 1) / 5)
+end
+
+-- Elements cycle order for Blessing
+local ELEMENTS = {"Fire", "Water", "Earth"}
 
 local function moneyOf(plr)
     local ls = plr:FindFirstChild("leaderstats")
@@ -57,50 +74,111 @@ local function pivotToBottomOffset(model: Model)
 end
 
 function Forge:Offers(plr, wave)
-    local run = self:GetRun(plr)
+	local run = self:GetRun(plr)
+	local waveNum = tonumber(wave) or 1
+	local segNow = segIdFromWave(waveNum)
+    -- in Offers(), after computing waveNum / segNow:
+    local zone = 1 + math.floor((waveNum-1)/30)  -- 30-wave zones, example
+    local blessPrice = 100 * zone
+    bless = { id="BLESS", elem=elem, name=("Elemental Blessing: %s"):format(elem), price=blessPrice }
 
-    -- start at tier 0 until first purchase
-    run.core = run.core or { id = CORE_POOL[1].id, tier = 0, name = CORE_POOL[1].name }
+	-- reset per-segment counters
+	if run.segId ~= segNow then
+		run.segId = segNow
+		run.rerolls = 0
+		run.vipFreeLeft = (plr:GetAttribute("VIP") == true)
+		-- expire blessing if you want: (leave it to fade naturally if you prefer)
+		-- run.blessIndex = run.blessIndex -- keep rotation memory
+	end
 
-    -- lookup the core def
-    local def; for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c break end end
-    if not def then def = CORE_POOL[1] end
+	-- core init (tier 0 until first buy)
+	run.core = run.core or { id = CORE_POOL[1].id, tier = 0, name = CORE_POOL[1].name }
 
-    -- price is for the NEXT tier (1..3)
-    local nextTier = math.clamp(run.core.tier + 1, 1, 3)
-    local price = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
+	-- find core def
+	local def
+	for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c; break end end
+	def = def or CORE_POOL[1]
 
-    local coreOffer = {
-        id    = run.core.id,
-        name  = def.name,
-        tier  = run.core.tier,  -- current (0..3)
-        pct   = def.pct,        -- % per tier (client uses for now→next)
-        price = price,          -- price for next tier
-    }
+	-- next core price (tier 1..3)
+	local nextTier = math.clamp(run.core.tier + 1, 1, 3)
+	local nextPrice = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
+	local coreOffer = {
+		id   = run.core.id,
+		name = def.name,
+		tier = run.core.tier, -- 0..3
+		pct  = def.pct,
+		price= nextPrice,
+	}
 
-    -- util caching (unchanged)
-    if not run.offers or run.offersWave ~= wave then
-        local util = table.clone(UTIL_POOL[math.random(1, #UTIL_POOL)])
-        if util.id == "REROLL" then
-            util.price += (run.rerolls * (util.scaler or 0))
-        end
-        run.offers     = { core = coreOffer, util = util }
-        run.offersWave = wave
-    else
-        local util = run.offers.util
-        if util and util.id == "REROLL" then
-            util.price = (UTIL_POOL[2].price + (run.rerolls * (UTIL_POOL[2].scaler or 0)))
-        end
-        run.offers.core = coreOffer
-    end
+	-- utility offer (cached per-wave unless rerolled)
+	if not run.offers or run.offersWave ~= waveNum or run.forceUtilRefresh then
+		run.forceUtilRefresh = false
+		local util = table.clone( UTIL_POOL[ math.random(1, #UTIL_POOL) ] )
+		run.offers = { core = coreOffer, util = util }
+		run.offersWave = waveNum
+	else
+		run.offers.core = coreOffer
+	end
 
-    return { core = table.clone(run.offers.core), util = table.clone(run.offers.util) }
+	-- Blessing micro-card (W15+)
+	local bless
+	if waveNum >= 15 then
+		run.blessIndex = ((run.blessIndex or 0) % #ELEMENTS) + 1
+		local elem = ELEMENTS[run.blessIndex]
+		bless = { id = "BLESS", elem = elem, name = ("Elemental Blessing: %s"):format(elem), price = 100 } -- tune per zone
+	end
+
+	-- Reroll pricing & free flag
+	local rerollCost = REROLL_BASE + (run.rerolls * REROLL_STEP)
+	local free = false
+	if run.vipFreeLeft then free = true end
+	if plr:GetAttribute("RerollVoucher") == true then free = true end
+
+	return {
+		core   = table.clone(run.offers.core),
+		util   = table.clone(run.offers.util),
+		bless  = bless, -- may be nil
+		reroll = { cost = rerollCost, free = free, seg = run.segId },
+	}
 end
 
 local function ownerPlayer(plot)
     local uid = plot:GetAttribute("OwnerUserId")
     if not uid then return nil end
     return Players:GetPlayerByUserId(uid)
+end
+
+local function grantAegisShield(heroModel: Model, frac)
+	local hum = heroModel and heroModel:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	local maxHp = math.max(1, hum.MaxHealth)
+	local shield = math.floor(maxHp * (frac or 0.20) + 0.5)
+	heroModel:SetAttribute("ShieldMax", shield)
+	heroModel:SetAttribute("ShieldHP",  shield)
+	heroModel:SetAttribute("ShieldExpireAt", 0) -- segment-based; we’ll just let it soak
+end
+
+local function rerollTarget(self, plr, plot, waveNum)
+	local run = self:GetRun(plr)
+	-- Before Tier 1: reroll CORE; After Tier 1: reroll UTIL
+	if (run.core and run.core.tier >= 1) then
+		-- reroll Util
+		run.forceUtilRefresh = true
+	else
+		-- reroll Core id only (rotate to a different core)
+		local cur = run.core and run.core.id or "ATK"
+		local pool = {"ATK","HP","HST"}
+		local choices = {}
+		for _,id in ipairs(pool) do if id ~= cur then table.insert(choices, id) end end
+		local newId = choices[ math.random(1, #choices) ]
+		-- switch to the new core (keep same tier)
+		for _,c in ipairs(CORE_POOL) do
+			if c.id == newId then
+				run.core = { id=newId, name=c.name, tier=run.core and run.core.tier or 0 }
+				break
+			end
+		end
+	end
 end
 
 -- ========= shrine model + VFX =========
@@ -325,84 +403,107 @@ end
 
 -- ===== purchases =====
 function Forge:Buy(plr, _waveFromClient, choice)
-	-- Basic sanity
-	if type(choice) ~= "table" or (choice.type ~= "CORE" and choice.type ~= "UTIL") then
-		return false, "bad_choice"
-	end
-
-	-- Validate plot ownership + shrine presence (prevents remote spam)
+	if type(choice) ~= "table" then return false, "bad_choice" end
 	local plot = choice.plot
 	if typeof(plot) ~= "Instance" or not plot.Parent then return false, "bad_plot" end
 	if (plot:GetAttribute("OwnerUserId") or 0) ~= plr.UserId then return false, "not_owner" end
-	-- Self-heal the link to the spawned forge/shrine, then verify
-    local ef = plot:FindFirstChild("ElementalForge")
-    if ef then
-        ShrineByPlot[plot] = ShrineByPlot[plot] or ef
-    end
-    if not ShrineByPlot[plot] then
-        return false, "no_shrine"
-    end
 
-	-- Money
-	local money = moneyOf(plr)
-	if not money then return false, "no_money" end
+	-- ensure forge presence
+	local ef = plot:FindFirstChild("ElementalForge")
+	if ef then ShrineByPlot[plot] = ShrineByPlot[plot] or ef end
+	if not ShrineByPlot[plot] then return false, "no_shrine" end
 
-	-- Use the **cached** offers for consistency with the client UI
-	local wave = plot:GetAttribute("CurrentWave") or 1
-	local offers = self:Offers(plr, wave)  -- will reuse cached run.offers
-	local run    = self:GetRun(plr)
+	local money = moneyOf(plr); if not money then return false, "no_money" end
+	local waveNum = tonumber(plot:GetAttribute("CurrentWave")) or 1
+	local offers = self:Offers(plr, waveNum) -- uses cached entries
+	local run = self:GetRun(plr)
 
-	if choice.type == "CORE" then
-		-- compute next tier & price from defs (supports tier 0 start)
-		local runCore = (self:GetRun(plr).core) or { id = offers.core.id, name = offers.core.name, tier = 0 }
-		local def; for _,c in ipairs(CORE_POOL) do if c.id == runCore.id then def = c break end end
-		if not def then def = CORE_POOL[1] end
+	-- REROLL as its own "type"
+	if choice.type == "REROLL" then
+		local cost = offers.reroll and offers.reroll.cost or REROLL_BASE
+		local free = offers.reroll and offers.reroll.free
+		if not free and money.Value < cost then return false, "poor" end
 
-		-- **ADD THIS BLOCK**: block purchases at max
-		if runCore.tier >= 3 then
-			return false, "max"
+		-- consume voucher first if present
+		if free and plr:GetAttribute("RerollVoucher") == true then
+			plr:SetAttribute("RerollVoucher", false)
+			-- keep vipFreeLeft untouched; voucher does not consume VIP
+		elseif free and run.vipFreeLeft then
+			run.vipFreeLeft = false
+		else
+			money.Value -= cost
 		end
 
-		local nextTier  = math.clamp(runCore.tier + 1, 1, 3)
+		run.rerolls += 1
+		rerollTarget(self, plr, plot, waveNum)
+		return true, { util = "REROLL" }
+	end
+
+	-- CORE buy
+	if choice.type == "CORE" then
+		local def
+		for _,c in ipairs(CORE_POOL) do if c.id == run.core.id then def = c; break end end
+		def = def or CORE_POOL[1]
+
+		if run.core.tier >= 3 then return false, "max" end
+		local nextTier = math.clamp(run.core.tier + 1, 1, 3)
 		local nextPrice = (nextTier == 1 and def.t1) or (nextTier == 2 and def.t2) or def.t3
 		if money.Value < nextPrice then return false, "poor" end
+
 		money.Value -= nextPrice
-
-		-- apply upgrade
-		run.core = { id = runCore.id, name = runCore.name, tier = math.min(runCore.tier + 1, 3) }
-
+		run.core = { id = run.core.id, name = def.name, tier = math.min(run.core.tier + 1, 3) }
 		plot:SetAttribute("CoreId",   run.core.id)
 		plot:SetAttribute("CoreTier", run.core.tier)
 		plot:SetAttribute("CoreName", run.core.name)
-
 		RE_HUD:FireClient(plr, { id = run.core.id, tier = run.core.tier, name = run.core.name })
 		return true, { core = run.core }
+	end
 
-	elseif choice.type == "UTIL" then
-		local util = offers.util
-		if not util then return false, "no_util" end
+	-- UTILITY buy (segment-limited)
+	if choice.type == "UTIL" then
+		local util = offers.util; if not util then return false, "no_util" end
 		if money.Value < util.price then return false, "poor" end
 		money.Value -= util.price
 
-		if util.id == "REROLL" then
-			run.rerolls += 1
-			-- force a fresh util next Offers() call (same wave is fine)
-			run.offers = nil
-			return true, { util = "REROLL" }
-
-		elseif util.id == "RECOVER" then
-			-- heal hero on this plot up to 60%
+		if util.id == "RECOVER" then
 			local hero = plot:FindFirstChild("Hero", true)
-			local hum  = hero and hero:FindFirstChildOfClass("Humanoid")
+			local hum = hero and hero:FindFirstChildOfClass("Humanoid")
 			if hum then
 				local target = math.floor(hum.MaxHealth * 0.60 + 0.5)
 				if hum.Health < target then hum.Health = target end
 			end
 			return true, { util = "RECOVER" }
+
+		elseif util.id == "AEGIS" then
+			local hero = plot:FindFirstChild("Hero", true)
+			if hero then grantAegisShield(hero, 0.20) end
+			return true, { util = "AEGIS" }
+
+		elseif util.id == "OVERCHARGE" then
+			plot:SetAttribute("Util_OverchargePct", 25)
+			plot:SetAttribute("UtilExpiresSegId", run.segId)
+			return true, { util = "OVERCHARGE" }
+
+		elseif util.id == "SECOND_WIND" then
+			plot:SetAttribute("Util_SecondWindLeft", 1)
+			plot:SetAttribute("UtilExpiresSegId", run.segId)
+			return true, { util = "SECOND_WIND" }
 		end
 
 		return false, "bad_util"
 	end
+
+	-- BLESS micro-card
+	if choice.type == "BLESS" then
+		local bless = offers.bless; if not bless then return false, "bad_choice" end
+		if money.Value < bless.price then return false, "poor" end
+		money.Value -= bless.price
+		plot:SetAttribute("BlessingElem", bless.elem)
+		plot:SetAttribute("BlessingExpiresSegId", run.segId)
+		return true, { bless = bless.elem }
+	end
+
+	return false, "bad_choice"
 end
 
 return Forge
