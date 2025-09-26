@@ -80,7 +80,6 @@ function Forge:Offers(plr, wave)
     -- in Offers(), after computing waveNum / segNow:
     local zone = 1 + math.floor((waveNum-1)/30)  -- 30-wave zones, example
     local blessPrice = 100 * zone
-    bless = { id="BLESS", elem=elem, name=("Elemental Blessing: %s"):format(elem), price=blessPrice }
 
 	-- reset per-segment counters
 	if run.segId ~= segNow then
@@ -125,7 +124,17 @@ function Forge:Offers(plr, wave)
 	if waveNum >= 15 then
 		run.blessIndex = ((run.blessIndex or 0) % #ELEMENTS) + 1
 		local elem = ELEMENTS[run.blessIndex]
-		bless = { id = "BLESS", elem = elem, name = ("Elemental Blessing: %s"):format(elem), price = 100 } -- tune per zone
+
+		-- simple zone scaler: every 30 waves = +100
+		local zone = 1 + math.floor((waveNum - 1) / 30)
+		local blessPrice = 100 * zone
+
+		bless = {
+			id = "BLESS",
+			elem = elem,
+			name = ("Elemental Blessing: %s"):format(elem),
+			price = blessPrice,
+		}
 	end
 
 	-- Reroll pricing & free flag
@@ -153,6 +162,7 @@ local function grantAegisShield(heroModel: Model, frac)
 	if not hum then return end
 	local maxHp = math.max(1, hum.MaxHealth)
 	local shield = math.floor(maxHp * (frac or 0.20) + 0.5)
+	heroModel:SetAttribute("ShieldBaseMax", shield)  -- <— baseline (durable portion)
 	heroModel:SetAttribute("ShieldMax", shield)
 	heroModel:SetAttribute("ShieldHP",  shield)
 	heroModel:SetAttribute("ShieldExpireAt", 0) -- segment-based; we’ll just let it soak

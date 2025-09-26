@@ -47,6 +47,17 @@ local function segId(plot: Instance)
 	return math.floor((w - 1) / 5)
 end
 
+local function plotOf(inst: Instance)
+	local cur = inst
+	while cur do
+		if cur:IsA("Model") and cur:GetAttribute("OwnerUserId") ~= nil then
+			return cur
+		end
+		cur = cur.Parent
+	end
+	return nil
+end
+
 -- ==================== shielding ====================
 -- Uses attributes:
 --   ShieldHP (number)        - remaining pool
@@ -169,12 +180,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
 
 	-- Identify source plot once; used by ATK core, Blessing, etc.
-	local srcPlot
-	if sourcePlayer then
-		local char = sourcePlayer.Character
-		local p = char and char:FindFirstChildWhichIsA("Model")
-		if p and (p:GetAttribute("OwnerUserId") == sourcePlayer.UserId) then srcPlot = p end
-	end
+	local srcPlot = sourcePlayer and sourcePlayer.Character and plotOf(sourcePlayer.Character) or nil
 
 	-- Blessing rider: if caller didn't specify an element, default to the active Blessing for this segment
 	do
@@ -189,21 +195,24 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		end
 	end
 
-	-- >>> ATK core (+8% per tier) from the *attacker's* plot
+	-- >>> ATK core (+8% per tier) from the attacker's plot, with Overcharge (+25% core effect)
 	do
 		if srcPlot and (srcPlot:GetAttribute("CoreId") == "ATK") then
 			local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
 			local coreC = 0.08 * t
-			-- Overcharge (+25% core effect) if active this segment
-			local seg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -999
-			local curSeg = segId(srcPlot)
-			if (srcPlot:GetAttribute("Util_OverchargePct") or 0) > 0 and seg == curSeg then
-				coreC = coreC * 1.25
+
+			-- Overcharge is segment-limited
+			local curWave = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
+			local curSeg  = math.floor((curWave - 1) / 5)
+			local activeSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId"))
+			if (srcPlot:GetAttribute("Util_OverchargePct") or 0) > 0 and activeSeg == curSeg then
+				coreC = coreC * 1.25 -- +25% to the core effect itself
 			end
+
 			outDmg = outDmg * (1 + coreC)
 		end
 	end
-	-- <<< ATK core
+	-- <<< ATK core (+ Overcharge)
 
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then

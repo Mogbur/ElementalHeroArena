@@ -1604,6 +1604,25 @@ local function runFightLoop(plot, portal, owner, opts)
 		local t0 = time()
 		while enemiesAliveForPlot(plot) > 0 and (time() - t0) < ENEMY_TTL_SEC do
 			if hum and hum.Health <= 0 then
+				-- === Second Wind (segment-limited, +1 life) ===
+				do
+					local segNow = ((startWave - 1) // 5)
+					local swLeft = tonumber(plot:GetAttribute("Util_SecondWindLeft")) or 0
+					local swSeg  = tonumber(plot:GetAttribute("UtilExpiresSegId"))
+					if swLeft > 0 and swSeg == segNow then
+						plot:SetAttribute("Util_SecondWindLeft", swLeft - 1)
+
+						-- restore to 60% HP and short invuln; allow the health write
+						local reviveHP = math.max(1, math.floor(hum.MaxHealth * 0.60 + 0.5))
+						hero:SetAttribute("GuardAllowDrop", 1)
+						hum.Health = reviveHP
+						hero:SetAttribute("GuardAllowDrop", 0)
+						hero:SetAttribute("InvulnUntil", os.clock() + 0.8)
+
+						-- cancel this death and continue the wave loop
+						continue
+					end
+				end
 				local legit = isCombatDeath(hero)
 
 				-- Guard-aware fallback: only legit if a recent combat hit actually landed

@@ -242,6 +242,7 @@ local function castAquaBarrier(plr, lv, hero, plot)
 	local perTick   = math.max(1, math.floor(total / math.max(1, ticks) + 0.5))
 	local duration  = tonumber(S.duration) or T.AQUA_DURATION or 6
 
+	-- trigger conditions (enemies near + low-ish HP)
 	local triggerRange = (S.triggerRange or 12)
 	local triggerCount = (S.triggerEnemyCount or 1)
 	local nearby = 0
@@ -257,12 +258,23 @@ local function castAquaBarrier(plr, lv, hero, plot)
 	local hpThresh = (T.Client and T.Client.AQUA_HP_THRESHOLD) or 0.75
 	if (hum.Health / math.max(1, hum.MaxHealth)) > hpThresh then return end
 
-	-- attributes for barrier (no ForceField push)
-	hero:SetAttribute("ShieldHP", shield)
-	hero:SetAttribute("ShieldExpireAt", os.clock() + duration) -- single source of truth
-	hero:SetAttribute("BarrierUntil",  os.clock() + duration)  -- (if you use this elsewhere)
+	-- ========= shield: add-on over durable baseline (Aegis) =========
+	local base   = tonumber(hero:GetAttribute("ShieldBaseMax")) or 0  -- set by Aegis, else 0
+	local curHP  = tonumber(hero:GetAttribute("ShieldHP"))      or 0
+	local add    = math.max(0, shield)
+	local newHP  = curHP + add
+	local newMax = math.max(base, newHP)
+	local expAt  = os.clock() + duration
 
-	popNumber(shield, hpp.Position + Vector3.new(0, 2.2, 0), Color3.fromRGB(90,180,255), "shield")
+	hero:SetAttribute("ShieldHP",      newHP)
+	hero:SetAttribute("ShieldMax",     newMax)
+	hero:SetAttribute("ShieldExpireAt", expAt)   -- timed part only
+	hero:SetAttribute("BarrierUntil",   expAt)
+
+	-- number popup shows the added amount
+	if add > 0 then
+		popNumber(add, hpp.Position + Vector3.new(0, 2.2, 0), Color3.fromRGB(90,180,255), "shield")
+	end
 
 	if RE_VFX then
 		RE_VFX:FireAllClients({
@@ -273,17 +285,22 @@ local function castAquaBarrier(plr, lv, hero, plot)
 		})
 	end
 
+	-- on expiry: clamp to durable baseline (if any)
 	task.delay(duration, function()
 		if hero and hero.Parent then
 			local now = os.clock()
 			if (hero:GetAttribute("ShieldExpireAt") or 0) <= now then
-				hero:SetAttribute("ShieldHP", 0)
+				local baseMax = tonumber(hero:GetAttribute("ShieldBaseMax")) or 0
+				local cur     = tonumber(hero:GetAttribute("ShieldHP")) or 0
+				hero:SetAttribute("ShieldMax",     baseMax)
+				hero:SetAttribute("ShieldHP",      baseMax > 0 and math.min(cur, baseMax) or 0)
 				hero:SetAttribute("ShieldExpireAt", 0)
-				hero:SetAttribute("BarrierUntil",  0)
+				hero:SetAttribute("BarrierUntil",   0)
 				if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
 			end
 		end
 	end)
+	-- ================================================================
 
 	-- DoT aura (damage via Combat)
 	task.spawn(function()
