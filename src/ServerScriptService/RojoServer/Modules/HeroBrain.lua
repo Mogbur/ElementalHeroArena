@@ -7,6 +7,9 @@ local TweenService       = game:GetService("TweenService")
 local Debris             = game:GetService("Debris")
 local RunService         = game:GetService("RunService")
 
+-- show the old server-built hero bar? (leave OFF; we use the new client HUD)
+local ENABLE_SERVER_HERO_BARS = false
+
 local Styles  = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("WeaponStyles"))
 local Mastery = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("StyleMastery"))
 local T       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("SkillTuning"))
@@ -223,14 +226,17 @@ function Brain.attach(hero: Model)
 	end
 	task.defer(function() pcall(function() hrp:SetNetworkOwner(nil) end) end)
 
-	-- billboard + visibility toggle
-	local gui, hpFill, shFill, hpWrap, shWrap = buildBillboard(hero, hum, hrp)
-	local function syncBarsVisible()
-		gui.Enabled = (hero:GetAttribute("BarsVisible") ~= 0)
+	-- client-side HeroHUD handles hero bars; only build the old server bar if explicitly enabled
+	local gui, hpFill, shFill, hpWrap, shWrap
+	if ENABLE_SERVER_HERO_BARS then
+		gui, hpFill, shFill, hpWrap, shWrap = buildBillboard(hero, hum, hrp)
+		local function syncBarsVisible()
+			gui.Enabled = (hero:GetAttribute("BarsVisible") ~= 0)
+		end
+		syncBarsVisible()
+		hero:GetAttributeChangedSignal("BarsVisible"):Connect(syncBarsVisible)
+		refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
 	end
-	syncBarsVisible()
-	hero:GetAttributeChangedSignal("BarsVisible"):Connect(syncBarsVisible)
-	refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
 
 	-- owner routing
 	local OWNER_ID = hero:GetAttribute("OwnerUserId") or 0
@@ -280,8 +286,13 @@ function Brain.attach(hero: Model)
 		local plot     = hero:FindFirstAncestorWhichIsA("Model")
 		local coreId   = plot and plot:GetAttribute("CoreId")
 		local coreTier = tonumber(plot and plot:GetAttribute("CoreTier")) or 0
-		local coreHpMul  = (coreId == "HP")  and (1 + 0.06 * coreTier) or 1
-		local coreSpdMul = (coreId == "HST") and (1 + 0.06 * coreTier) or 1
+		local bonus    = 1 + 0.06 * coreTier
+
+		local coreHpMul  = (coreId == "HP")  and bonus or 1
+		local coreSpdMul = (coreId == "HST") and bonus or 1
+		local coreAtkMul = (coreId == "ATK") and bonus or 1  -- NEW
+		-- expose so everything (incl. skills) can read it
+		hero:SetAttribute("__CoreAtkMul", coreAtkMul)
 
 		-- Max HP = base * style * core(HP)
 		local newMax = math.floor(baseMax * (S.hpMul or 1.0) * coreHpMul + 0.5)
@@ -299,7 +310,7 @@ function Brain.attach(hero: Model)
 
 		-- melee base damage from style (your old logic)
 		local baseMelee = 15
-		MELEE_DAMAGE   = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
+		MELEE_DAMAGE = math.floor(baseMelee * (S.atkMul or 1.0) * (hero:GetAttribute("__CoreAtkMul") or 1) + 0.5)
 
 		-- Basic swing cadence = base / (style * core(Haste))
 		local baseSwing = 0.60
@@ -417,6 +428,8 @@ function Brain.attach(hero: Model)
 		opts = opts or {}
 		local isCrit = false
 		local dealt  = amount
+		 -- Core ATK% affects all outgoing damage (basics + skills)
+    	dealt = dealt * (hero:GetAttribute("__CoreAtkMul") or 1)
 
 		-- normal crits unless disabled (this is your generic crit system)
 		if allowCrit ~= false then
@@ -529,36 +542,26 @@ function Brain.attach(hero: Model)
 	end
 
 	-- ===== damage intake (UI refresh only; DR/Guard handled in Combat) =====
-	do
-		-- Keep the bars in sync with health changes (no refunds here)
+	if ENABLE_SERVER_HERO_BARS then
 		hum.HealthChanged:Connect(function(_newHealth)
 			refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
 		end)
 
-		-- React to shield attribute changes:
-		-- - refresh the subbar
-		-- - if ShieldHP hits 0 early, kill the barrier VFX and clear timers
 		hero.AttributeChanged:Connect(function(attrName)
 			if attrName == "ShieldHP" or attrName == "ShieldMax" then
 				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
-
 				if attrName == "ShieldHP" then
 					local s  = hero:GetAttribute("ShieldHP") or 0
 					local t  = hero:GetAttribute("ShieldExpireAt") or 0
-					-- If shield is broken before time expires, clean up right away
-					if s <= 0 and t > 0 then
+					if s <= 0 and t > 0 and RE_VFX then
 						hero:SetAttribute("ShieldMax", 0)
 						hero:SetAttribute("ShieldExpireAt", 0)
-						-- optional: kill effect bubble immediately
-						if RE_VFX then
-							RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero })
-						end
+						RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero })
 					end
 				end
 			end
 		end)
 	end
-
 
 	-- ===== attacks =====
 
@@ -833,7 +836,9 @@ function Brain.attach(hero: Model)
 				hero:SetAttribute("ShieldMax", 0)
 				hero:SetAttribute("ShieldExpireAt", 0)
 				if RE_VFX then RE_VFX:FireAllClients({ kind = "aquabarrier_kill", who = hero }) end
-				refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
+				if ENABLE_SERVER_HERO_BARS then
+					refreshBars(hero, hum, hpFill, shFill, hpWrap, shWrap)
+				end
 			end
 		end
 	end))

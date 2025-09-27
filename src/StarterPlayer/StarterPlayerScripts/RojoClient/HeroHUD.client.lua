@@ -1,199 +1,290 @@
 -- HeroHUD.client.lua
--- World-space HP bar (with numbers) + thin shield bar (with numbers) for YOUR hero only.
+-- Solid, non-drifting hero bars (HP + thin blue Shield), numbers inside, element icon.
+-- Works only for the local player's hero. Enemies are handled by EnemyHUD.
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local Players     = game:GetService("Players")
+local RunService  = game:GetService("RunService")
+local lp          = Players.LocalPlayer
 
-local LP = Players.LocalPlayer
+local function primaryPart(m)
+	return m and (m.PrimaryPart or m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart"))
+end
+local function humanoid(m)
+	local h = m and m:FindFirstChildOfClass("Humanoid")
+	if h and h.Health > 0 then return h end
+	return m and m:FindFirstChildOfClass("Humanoid") -- allow 0 to show 0/Max
+end
 
--- === find your hero under your plot ===
-local function findMyHero()
+local function myPlot()
 	local plots = workspace:FindFirstChild("Plots")
 	if not plots then return end
-	for _, plot in ipairs(plots:GetChildren()) do
-		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == LP.UserId then
-			local hero = plot:FindFirstChild("Hero", true)
-			if hero and hero:IsA("Model") then
-				return hero, plot
-			end
+	for _,p in ipairs(plots:GetChildren()) do
+		if p:IsA("Model") and p:GetAttribute("OwnerUserId") == lp.UserId then
+			return p
 		end
 	end
 end
 
--- === build the billboard (HP + shield) ===
-local function buildGui(hrp)
+local function myHero()
+	local p = myPlot()
+	if not p then return end
+	local h = p:FindFirstChild("Hero", true)
+	if h and h:IsA("Model") then return h, p end
+end
+
+-- compute billboard offset above the hero’s head from bounding box
+local function offsetYFor(model)
+	if not model then return 4 end
+	local _, size = model:GetBoundingBox()
+	return math.max(3.5, size.Y * 0.55) -- consistent headspace on any rig
+end
+
+-- Tiny element “icon” without relying on external images (safe fallback).
+-- If you add images later, set `ICON.Image` with rbxassetids here.
+local ELEMENT_EMOJI = {
+	Fire   = "🔥",
+	Water  = "💧",
+	Earth  = "🪨",
+	Neutral= "⬤",
+}
+local ELEMENT_ICON = {
+	Fire    = "rbxassetid://138197195310947",
+	Water   = "rbxassetid://102519339667737",
+	Earth   = "rbxassetid://16944709510",
+	Neutral = "rbxassetid://742820149",
+}
+
+-- ===== UI BUILD =====
+local function buildGui()
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "HeroHUD"
 	bb.AlwaysOnTop = true
-	bb.Size = UDim2.fromOffset(140, 28) -- HP 18px + shield 10px
-	bb.StudsOffset = Vector3.new(0, 3.1, 0)
-	bb.Adornee = hrp
+	bb.Size = UDim2.fromOffset(160, 28)  -- total height: HP 16 + pad 2 + Shield 8 + pad 2
+	bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+	bb.MaxDistance = 250
 
-	-- root
 	local root = Instance.new("Frame")
 	root.BackgroundTransparency = 1
 	root.Size = UDim2.fromScale(1,1)
 	root.Parent = bb
 
-	-- HP background
-	local hpBG = Instance.new("Frame")
-	hpBG.Name = "HPBG"
-	hpBG.BackgroundColor3 = Color3.fromRGB(25,25,25)
-	hpBG.BorderSizePixel = 0
-	hpBG.Size = UDim2.fromOffset(bb.Size.X.Offset, 18)
-	hpBG.Position = UDim2.fromOffset(0, 0)
-	hpBG.Parent = root
-	Instance.new("UICorner", hpBG).CornerRadius = UDim.new(0, 6)
-	local hpBGStroke = Instance.new("UIStroke", hpBG)
-	hpBGStroke.Thickness = 2
-	hpBGStroke.Color = Color3.fromRGB(0,0,0)
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.VerticalAlignment = Enum.VerticalAlignment.Center
+	list.Padding = UDim.new(0, 2)
+	list.Parent = root
+
+	-- HP BAR (16 px)
+	local HPBack = Instance.new("Frame")
+	HPBack.Name = "HPBack"
+	HPBack.Size = UDim2.new(1, -2, 0, 16)
+	HPBack.BackgroundColor3 = Color3.fromRGB(36,36,36)
+	HPBack.BorderSizePixel = 0
+	HPBack.Parent = root
+	local hpCorner = Instance.new("UICorner", HPBack) hpCorner.CornerRadius = UDim.new(0, 6)
+	local hpStroke = Instance.new("UIStroke", HPBack) hpStroke.Thickness = 1 hpStroke.Color = Color3.fromRGB(0,0,0) hpStroke.Transparency = 0.35
+
+    -- icon holder (left inside HP bar) - IMAGE
+    local Icon = Instance.new("ImageLabel")
+    Icon.Name = "Icon"
+    Icon.AnchorPoint = Vector2.new(0,0.5)
+    Icon.Position = UDim2.fromOffset(3, 8)
+    Icon.Size = UDim2.fromOffset(14, 14)
+    Icon.BackgroundTransparency = 1
+    Icon.ScaleType = Enum.ScaleType.Fit
+    Icon.ZIndex = 5
+    Icon.Parent = HPBack
+    local icCorner = Instance.new("UICorner", Icon) icCorner.CornerRadius = UDim.new(1,0)
 
 	-- HP fill
-	local hpFill = Instance.new("Frame")
-	hpFill.Name = "HPFill"
-	hpFill.BackgroundColor3 = Color3.fromRGB(80, 235, 100)
-	hpFill.BorderSizePixel = 0
-	hpFill.Size = UDim2.fromScale(1,1)
-	hpFill.Parent = hpBG
-	Instance.new("UICorner", hpFill).CornerRadius = UDim.new(0, 6)
+	local HPFill = Instance.new("Frame")
+	HPFill.Name = "HPFill"
+	HPFill.Size = UDim2.new(0, 0, 1, 0)
+	HPFill.BackgroundColor3 = Color3.fromRGB(90, 220, 100)
+	HPFill.BorderSizePixel = 0
+	HPFill.Parent = HPBack
+	local hpFillCorner = Instance.new("UICorner", HPFill) hpFillCorner.CornerRadius = UDim.new(0, 6)
 
-	-- HP text
-	local hpText = Instance.new("TextLabel")
-	hpText.BackgroundTransparency = 1
-	hpText.Size = UDim2.fromScale(1,1)
-	hpText.Font = Enum.Font.GothamBold
-	hpText.TextColor3 = Color3.new(1,1,1)
-	hpText.TextScaled = true
-	hpText.Parent = hpBG
-	local hpStroke = Instance.new("UIStroke", hpText)
-	hpStroke.Thickness = 2
-	hpStroke.Color = Color3.fromRGB(0,0,0)
-	hpStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Outline
+	-- HP text (centered; padded so it doesn’t sit under the icon)
+	local HPText = Instance.new("TextLabel")
+	HPText.Name = "HPText"
+	HPText.BackgroundTransparency = 1
+	HPText.Size = UDim2.fromScale(1,1)
+	HPText.Position = UDim2.fromOffset(0,0)
+	HPText.Font = Enum.Font.GothamBold
+	HPText.TextScaled = true
+	HPText.TextColor3 = Color3.fromRGB(255,255,255)
+	HPText.TextStrokeTransparency = 0.2
+	HPText.Text = "0 / 0"
+	HPText.Parent = HPBack
+	local pad = Instance.new("UIPadding", HPText)
+	pad.PaddingLeft = UDim.new(0, 18)
 
-	-- Shield background (thinner, below HP)
-	local shBG = Instance.new("Frame")
-	shBG.Name = "ShieldBG"
-	shBG.BackgroundColor3 = Color3.fromRGB(20,20,32)
-	shBG.BorderSizePixel = 0
-	shBG.Size = UDim2.fromOffset(bb.Size.X.Offset, 8)
-	shBG.Position = UDim2.fromOffset(0, 18) -- just below HP bar
-	shBG.Parent = root
-	Instance.new("UICorner", shBG).CornerRadius = UDim.new(0, 4)
+	-- SHIELD BAR (8 px) – thin, directly under HP
+	local SBack = Instance.new("Frame")
+	SBack.Name = "SBack"
+	SBack.Size = UDim2.new(1, -2, 0, 8)
+	SBack.BackgroundColor3 = Color3.fromRGB(26,26,30)
+	SBack.BorderSizePixel = 0
+	SBack.Parent = root
+	local sCorner = Instance.new("UICorner", SBack) sCorner.CornerRadius = UDim.new(0, 4)
+	local sStroke = Instance.new("UIStroke", SBack) sStroke.Thickness = 1 sStroke.Color = Color3.fromRGB(0,0,0) sStroke.Transparency = 0.35
 
-	-- Shield fill
-	local shFill = Instance.new("Frame")
-	shFill.Name = "ShieldFill"
-	shFill.BackgroundColor3 = Color3.fromRGB(95,170,255)
-	shFill.BorderSizePixel = 0
-	shFill.Size = UDim2.fromScale(0,1)
-	shFill.Parent = shBG
-	Instance.new("UICorner", shFill).CornerRadius = UDim.new(0, 4)
+	local SFill = Instance.new("Frame")
+	SFill.Name = "SFill"
+	SFill.Size = UDim2.new(0, 0, 1, 0)
+	SFill.BackgroundColor3 = Color3.fromRGB(80, 160, 255)
+	SFill.BorderSizePixel = 0
+	SFill.Parent = SBack
+	local sFillCorner = Instance.new("UICorner", SFill) sFillCorner.CornerRadius = UDim.new(0, 4)
 
-	-- Shield text (numbers inside)
-	local shText = Instance.new("TextLabel")
-	shText.BackgroundTransparency = 1
-	shText.Size = UDim2.fromScale(1,1)
-	shText.Font = Enum.Font.GothamBold
-	shText.TextColor3 = Color3.fromRGB(220,235,255)
-	shText.TextScaled = true
-	shText.Parent = shBG
-	local shStroke = Instance.new("UIStroke", shText)
-	shStroke.Thickness = 2
-	shStroke.Color = Color3.fromRGB(0,0,0)
-	shStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Outline
+	local SText = Instance.new("TextLabel")
+	SText.Name = "SText"
+	SText.BackgroundTransparency = 1
+	SText.Size = UDim2.fromScale(1,1)
+	SText.Font = Enum.Font.GothamBold
+	SText.TextScaled = true
+	SText.TextColor3 = Color3.fromRGB(230,240,255)
+	SText.TextStrokeTransparency = 0.45
+	SText.Text = ""
+	SText.Parent = SBack
 
-	return bb, hpFill, hpText, shBG, shFill, shText
+	return bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText
 end
 
--- === attach + live update ===
-local currentHero
-local maid = {}
+-- ===== main attach/update =====
+local bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText = buildGui()
+local attachedHero, attachedPlot, attachedHum
+local lastAdornee, lastOffsetY
+local _plotBlessingConn
 
-local function cleanup()
-	for _, conn in ipairs(maid) do
-		pcall(function() conn:Disconnect() end)
-	end
-	table.clear(maid)
-	if currentHero then
-		local gui = currentHero:FindFirstChild("HeroHUD")
-		if gui then gui:Destroy() end
-	end
-	currentHero = nil
+local function normalizeElem(e)
+	e = tostring(e or "Neutral")
+	if e == "Fire" or e == "Water" or e == "Earth" then return e end
+	return "Neutral"
 end
 
-local function attach(hero)
-	cleanup()
-	currentHero = hero
+-- blessing-driven element (from the plot only)
+local function elementFromBlessing(plot)
+	return normalizeElem(plot and plot:GetAttribute("LastElement"))
+end
 
-	local hum = hero:FindFirstChildOfClass("Humanoid")
-	local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
-	if not (hum and hrp) then return end
-
-	local bb, hpFill, hpText, shBG, shFill, shText = buildGui(hrp)
-	bb.Parent = hero
-
-	-- show/hide with BarsVisible attribute (server drives this in PlotService)
-	local function setBars(on)
-		bb.Enabled = (on == 1 or on == true)
+local function setElementIcon(plot)
+	local e = elementFromBlessing(plot)
+	if ELEMENT_ICON[e] and ELEMENT_ICON[e] ~= "" then
+		Icon.Image = ELEMENT_ICON[e]
+	else
+		Icon.Image = "" -- no image? fall back to emoji look
+		-- quick emoji fallback: tint and show a tiny dot using a 9-slice? simplest is:
+		-- (if you want a text fallback, convert Icon back to a TextLabel; otherwise just leave image empty)
 	end
-	setBars(hero:GetAttribute("BarsVisible"))
-	table.insert(maid, hero:GetAttributeChangedSignal("BarsVisible"):Connect(function()
-		setBars(hero:GetAttribute("BarsVisible"))
-	end))
+end
 
-	local function refresh()
-		if not (hum and hum.Parent) then return end
+local function attach()
+	local h, p = myHero()
+	if not h then
+		if bb.Parent then bb.Parent = nil end
+		attachedHero, attachedPlot, attachedHum = nil, nil, nil
+		return
+	end
 
-		-- HP
-		local hp = math.max(0, math.floor(hum.Health + 0.5))
-		local max = math.max(1, math.floor(hum.MaxHealth + 0.5))
-		local frac = math.clamp(hp / max, 0, 1)
-		hpFill.Size = UDim2.new(frac, 0, 1, 0)
-		hpText.Text = string.format("%d / %d", hp, max)
+	local hum = humanoid(h)
+	local pp = primaryPart(h)
+	if not pp then return end
 
-		-- Shield (reads Combat/Forge attributes)
-		local s = math.max(0, math.floor(tonumber(hero:GetAttribute("ShieldHP")) or 0))
-		local sMaxAttr = math.max(0, math.floor(tonumber(hero:GetAttribute("ShieldMax")) or 0))
-		local sMax = math.max(sMaxAttr, s) -- if ShieldMax is missing (Aquabarrier), treat current as cap
+	attachedHero, attachedPlot, attachedHum = h, p, hum
+    -- react to blessing swaps
+    if _plotBlessingConn then _plotBlessingConn:Disconnect() end
+    if attachedPlot then
+        _plotBlessingConn = attachedPlot:GetAttributeChangedSignal("LastElement"):Connect(function()
+            setElementIcon(attachedPlot)
+        end)
+    end
+	bb.Parent = h
+	bb.Adornee = pp
 
-		-- handle time-based expiry
-		local exp = tonumber(hero:GetAttribute("ShieldExpireAt")) or 0
-		if exp > 0 and os.clock() >= exp then s = 0 end
+	-- vertically anchor once and refresh occasionally
+	local oy = offsetYFor(h)
+	bb.StudsOffsetWorldSpace = Vector3.new(0, oy, 0)
+	lastAdornee, lastOffsetY = pp, oy
 
-		if sMax <= 0 or s <= 0 then
-			shBG.Visible = false
-		else
-			shBG.Visible = true
-			local sFrac = math.clamp(s / sMax, 0, 1)
-			shFill.Size = UDim2.new(sFrac, 0, 1, 0)
-			shText.Text = tostring(s)
+	-- element icon styling
+	setElementIcon(p)
+end
+
+-- show/hide respects BarsVisible (default hidden while idle)
+local function updateVisibility()
+	local show = false
+	if attachedHero then
+		if attachedHero:GetAttribute("BarsVisible") == 1 then
+			show = true
 		end
 	end
-
-	-- health + shield change hooks
-	table.insert(maid, hum.HealthChanged:Connect(refresh))
-	table.insert(maid, hum:GetPropertyChangedSignal("MaxHealth"):Connect(refresh))
-	table.insert(maid, hero:GetAttributeChangedSignal("ShieldHP"):Connect(refresh))
-	table.insert(maid, hero:GetAttributeChangedSignal("ShieldMax"):Connect(refresh))
-	table.insert(maid, hero:GetAttributeChangedSignal("ShieldExpireAt"):Connect(refresh))
-
-	-- keep Adornee updated if HRP switches
-	table.insert(maid, hero.ChildAdded:Connect(function(c)
-		if c.Name == "HumanoidRootPart" and c:IsA("BasePart") then bb.Adornee = c end
-	end))
-
-	refresh()
+	bb.Enabled = show
 end
 
--- === watcher loop: (re)attach whenever your hero instance changes ===
-task.spawn(function()
-	while true do
-		local hero = select(1, findMyHero())
-		if hero and hero ~= currentHero then
-			attach(hero)
-		elseif not hero and currentHero then
-			cleanup()
+local function clamp01(x) return (x < 0 and 0) or (x > 1 and 1) or x end
+
+local function updateNumbers()
+	if not (attachedHum and attachedHum.Parent) then return end
+
+	local hp = math.max(0, math.floor(attachedHum.Health + 0.5))
+	local mx = math.max(1, math.floor(attachedHum.MaxHealth + 0.5))
+	local ratio = clamp01(hp / mx)
+	HPFill.Size = UDim2.new(ratio, 0, 1, 0)
+	HPText.Text = string.format("%d / %d", hp, mx)
+
+	-- make the green a bit “danger” tinted at low HP
+	if ratio <= 0.25 then
+		HPFill.BackgroundColor3 = Color3.fromRGB(230,80,80)
+	else
+		HPFill.BackgroundColor3 = Color3.fromRGB(90,220,100)
+	end
+
+	-- shield reads from attributes and is scaled to MaxHealth so it lines up visually
+	local sh = math.max(0, math.floor((attachedHero:GetAttribute("ShieldHP") or 0) + 0.5))
+	local shRatio = clamp01(sh / mx)
+	SFill.Size = UDim2.new(shRatio, 0, 1, 0)
+	if sh > 0 then
+		SBack.Visible = true
+		SText.Text = tostring(sh)
+	else
+		SBack.Visible = false
+		SText.Text = ""
+	end
+end
+
+-- gentle refresh of offset so it stays pinned even if rig height changes
+local tAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+	if not attachedHero or not attachedHero.Parent then
+		attach() -- try again until the hero exists
+		return
+	end
+
+	-- Visibility + numbers every frame (cheap)
+	updateVisibility()
+	updateNumbers()
+
+	-- Re-check position ~4x a second
+	tAccum += dt
+	if tAccum >= 0.25 then
+		tAccum = 0
+		local pp = primaryPart(attachedHero)
+		if bb.Adornee ~= pp then bb.Adornee = pp end
+		local oy = offsetYFor(attachedHero)
+		if math.abs(oy - (lastOffsetY or 0)) > 0.05 then
+			bb.StudsOffsetWorldSpace = Vector3.new(0, oy, 0)
+			lastOffsetY = oy
 		end
-		task.wait(0.25)
+		-- element might change between segments (Blessing/forge swaps)
+		setElementIcon(attachedPlot)
 	end
 end)
+
+-- first attach
+attach()
+
+-- also reattach when character/plot gets replaced
+lp.CharacterAdded:Connect(function() task.wait(0.2); attach() end)
