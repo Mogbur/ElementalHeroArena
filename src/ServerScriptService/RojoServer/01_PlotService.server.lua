@@ -78,6 +78,7 @@ local HERO_IDLE_ANCHOR  = "03_HeroAnchor"
 local PORTAL_ANCHOR     = "05_PortalAnchor"
 local BANNER_ANCHOR     = "06_BannerAnchor" -- optional; falls back to portal
 local ARENA_HERO_SPAWN  = "07_HeroArenaAnchor"
+local CP_PEDESTAL_NAME = "CheckpointPedestal"
 
 -- Wave restart checkpoints (every N waves)
 local WAVE_CHECKPOINT_INTERVAL = 5   -- 5 = restart to 1/6/11/...
@@ -591,6 +592,20 @@ local function preWaveGuard(hero: Model, sec: number?)
 			hero:SetAttribute("InvulnUntil", 0)
 		end
 	end)
+end
+
+local function unlockedCheckpointsFor(plot: Model)
+	local current = plot:GetAttribute("CurrentWave") or 1
+	local lastCleared = math.max(0, current - 1)
+	local maxCP = 1
+	if lastCleared >= 1 then
+		maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
+	end
+	local list = {}
+	for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do
+		table.insert(list, w)
+	end
+	return list, maxCP
 end
 
 -- === Spawn volumes (optional designer controls) ===
@@ -1687,18 +1702,12 @@ local function runFightLoop(plot, portal, owner, opts)
 				local owner = plotToPlayer[plot]
 				pcall(function() Forge:Reset(owner, plot) end)
 
-				-- open the restart picker with unlocked checkpoints
-				if owner then
-					-- build a default list here (same math as RF) for convenience
-					local lastCleared = math.max(0, startWave - 1)
-					local maxCP = 1
-					if lastCleared >= 1 then
-						maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
-					end
-					local opts = {}
-					for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(opts, w) end
-					RE_OpenCP:FireClient(owner, { options = opts, default = cpStart })
-				end
+				-- Do NOT auto-open the CP UI; pedestal handles it.
+				wireCheckpointPedestal(plot, owner)   -- ensure the permanent pedestal is ready
+
+				-- Per new plan: show the Forge after a defeat so players can choose to spend Flux.
+				Forge:SpawnElementalForge(plot)
+
 				task.delay(0.25, function()
 					local h2 = getHero(plot); if not h2 then return end
 					setModelFrozen(h2, false)
@@ -1742,6 +1751,7 @@ local function runFightLoop(plot, portal, owner, opts)
 
 			-- Middle-of-arena shrine
 			Forge:SpawnElementalForge(plot)
+			wireCheckpointPedestal(plot, owner)   -- idempotent; ensures prompt is live
 
 			-- Clean the field; resume is via totem (Start Wave)
 			cleanupLeftovers_local()
@@ -1957,6 +1967,36 @@ local function createTotemPrompt(plot, owner)
 	return true
 end
 
+local function wireCheckpointPedestal(plot: Model, owner: Player?)
+	-- find designer-placed pedestal
+	local ped = plot:FindFirstChild(CP_PEDESTAL_NAME, true)
+
+	-- attach (or reattach) a single prompt
+	local holder = ped:FindFirstChildWhichIsA("BasePart") or ped.PrimaryPart
+	if not holder then return end
+	for _,d in ipairs(ped:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then d:Destroy() end
+	end
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "CheckpointPrompt"
+	prompt.ActionText = "Choose Checkpoint"
+	prompt.ObjectText = "Pedestal"
+	prompt.HoldDuration = 0
+	prompt.MaxActivationDistance = 16
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = holder
+
+	prompt.Triggered:Connect(function(plr)
+		-- only the plot owner can use it
+		local ownerId = plot:GetAttribute("OwnerUserId") or 0
+		if ownerId ~= 0 and plr.UserId ~= ownerId then return end
+		local opts, def = unlockedCheckpointsFor(plot)
+		RE_OpenCP:FireClient(plr, { options = opts, default = def })
+	end)
+
+	return ped
+end
+
 -- === Player flow / claim ===
 local function teleportPlayerToGate(player, plot)
 	local spawn = getAnchor(plot, SPAWN_ANCHOR) or plot.PrimaryPart; if not spawn then return end
@@ -1993,9 +2033,9 @@ local function claimPlot(plot, player)
 	local hum = hero:FindFirstChildOfClass("Humanoid")
 	if hum then hum.Health = hum.MaxHealth end
 	setCombatLock(plot, true)
-	if not createTotemPrompt(plot, player) then
-		createPortalPrompt(plot, player)
-	end
+	createTotemPrompt(plot, player)      -- start-wave prompt on the totem
+	wireCheckpointPedestal(plot, player) -- <-- ALWAYS wire the pedestal (idempotent)
+	createPortalPrompt(plot, player)     -- legacy stub (harmless)
 
 	-- NEW: re-assert idle & do a hard settle a tick later
 	plot:SetAttribute("AtIdle", true)
