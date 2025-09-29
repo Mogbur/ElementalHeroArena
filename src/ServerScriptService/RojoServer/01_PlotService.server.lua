@@ -78,7 +78,6 @@ local HERO_IDLE_ANCHOR  = "03_HeroAnchor"
 local PORTAL_ANCHOR     = "05_PortalAnchor"
 local BANNER_ANCHOR     = "06_BannerAnchor" -- optional; falls back to portal
 local ARENA_HERO_SPAWN  = "07_HeroArenaAnchor"
-local CP_PEDESTAL_NAME = "CheckpointPedestal"
 
 -- Wave restart checkpoints (every N waves)
 local WAVE_CHECKPOINT_INTERVAL = 5   -- 5 = restart to 1/6/11/...
@@ -133,6 +132,7 @@ end
 -- === Forward declarations ===
 local setSignpost
 local pinFrozenHeroToIdleGround -- forward declaration
+local wireCheckpointMarker   -- ← add this
 
 local function playAt(partOrPos, soundId, vol)
 	if not soundId then return end
@@ -438,31 +438,43 @@ end
 -- === Remotes ===
 local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
 if not Remotes then
-	Remotes = Instance.new("Folder")
-	Remotes.Name = "Remotes"
-	Remotes.Parent = ReplicatedStorage
+    Remotes = Instance.new("Folder")
+    Remotes.Name = "Remotes"
+    Remotes.Parent = ReplicatedStorage
 end
 
-local function ensureRemote(name)
-	local r = Remotes:FindFirstChild(name)
-	if not r then
-		r = Instance.new("RemoteEvent")
-		r.Name = name
-		r.Parent = Remotes
-	end
-	return r
+-- helpers
+local function ensureRE(name) -- RemoteEvent
+    local r = Remotes:FindFirstChild(name)
+    if not r then
+        r = Instance.new("RemoteEvent")
+        r.Name = name
+        r.Parent = Remotes
+    end
+    return r
 end
 
-local RF_Checkpoint: RemoteFunction = Remotes:WaitForChild("CheckpointRF")
-local RE_OpenCP:     RemoteEvent    = Remotes:WaitForChild("OpenCheckpointUI")
+local function ensureRF(name) -- RemoteFunction
+    local r = Remotes:FindFirstChild(name)
+    if not r then
+        r = Instance.new("RemoteFunction")
+        r.Name = name
+        r.Parent = Remotes
+    end
+    return r
+end
 
-local RE_WaveText   = ensureRemote("WaveText")
-ensureRemote("OpenEquipMenu")
-ensureRemote("CastSkillRequest")
-ensureRemote("SkillPurchaseRequest")
-ensureRemote("SkillEquipRequest")
-ensureRemote("DamageNumbers")
-ensureRemote("SkillVFX")
+-- make sure these exist (no waits)
+local RF_Checkpoint: RemoteFunction = ensureRF("CheckpointRF")
+local RE_OpenCP:     RemoteEvent    = ensureRE("OpenCheckpointUI")
+
+local RE_WaveText = ensureRE("WaveText")
+ensureRE("OpenEquipMenu")
+ensureRE("CastSkillRequest")
+ensureRE("SkillPurchaseRequest")
+ensureRE("SkillEquipRequest")
+ensureRE("DamageNumbers")
+ensureRE("SkillVFX")
 
 -- === State ===
 local playerToPlot  = {} -- [Player] = Model
@@ -1702,9 +1714,6 @@ local function runFightLoop(plot, portal, owner, opts)
 				local owner = plotToPlayer[plot]
 				pcall(function() Forge:Reset(owner, plot) end)
 
-				-- Do NOT auto-open the CP UI; pedestal handles it.
-				wireCheckpointPedestal(plot, owner)   -- ensure the permanent pedestal is ready
-
 				-- Per new plan: show the Forge after a defeat so players can choose to spend Flux.
 				Forge:SpawnElementalForge(plot)
 
@@ -1751,7 +1760,7 @@ local function runFightLoop(plot, portal, owner, opts)
 
 			-- Middle-of-arena shrine
 			Forge:SpawnElementalForge(plot)
-			wireCheckpointPedestal(plot, owner)   -- idempotent; ensures prompt is live
+			wireCheckpointMarker(plot, owner)   -- idempotent; ensures prompt is live
 
 			-- Clean the field; resume is via totem (Start Wave)
 			cleanupLeftovers_local()
@@ -1935,7 +1944,10 @@ local function createTotemPrompt(plot, owner)
 	pp.ObjectText = "Arena Totem"
 	pp.HoldDuration = 0
 	pp.RequiresLineOfSight = false
-	pp.MaxActivationDistance = 18
+	pp.MaxActivationDistance = 16
+	pp.KeyboardKeyCode = Enum.KeyCode.E           -- Keyboard
+	pp.GamepadKeyCode  = Enum.KeyCode.ButtonX     -- PS5 Square / Xbox X
+	pp.Exclusivity     = Enum.ProximityPromptExclusivity.OnePerButton
 	pp.Parent = totem.gem
 
 	local function begin(plr)
@@ -1967,34 +1979,39 @@ local function createTotemPrompt(plot, owner)
 	return true
 end
 
-local function wireCheckpointPedestal(plot: Model, owner: Player?)
-	-- find designer-placed pedestal
-	local ped = plot:FindFirstChild(CP_PEDESTAL_NAME, true)
+-- === Checkpoint marker prompt (on the NumberCore) ===
+wireCheckpointMarker = function(plot: Model, owner: Player?)
+    local arena  = plot:FindFirstChild("Arena")
+    local marker = arena and arena:FindFirstChild("CheckpointMarker")
+    local core   = marker and marker:FindFirstChild("NumberCore")
+    if not (core and core:IsA("BasePart")) then return end
 
-	-- attach (or reattach) a single prompt
-	local holder = ped:FindFirstChildWhichIsA("BasePart") or ped.PrimaryPart
-	if not holder then return end
-	for _,d in ipairs(ped:GetDescendants()) do
-		if d:IsA("ProximityPrompt") then d:Destroy() end
-	end
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.Name = "CheckpointPrompt"
-	prompt.ActionText = "Choose Checkpoint"
-	prompt.ObjectText = "Pedestal"
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 16
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = holder
+    for _, d in ipairs(core:GetChildren()) do
+        if d:IsA("ProximityPrompt") then d:Destroy() end
+    end
 
-	prompt.Triggered:Connect(function(plr)
-		-- only the plot owner can use it
+    local pp = Instance.new("ProximityPrompt")
+    pp.Name = "CheckpointPrompt_Marker"
+    pp.ActionText = "Open Checkpoint Chooser"
+    pp.ObjectText = ""
+    pp.HoldDuration = 0
+    pp.KeyboardKeyCode = Enum.KeyCode.E
+    pp.GamepadKeyCode  = Enum.KeyCode.ButtonX   -- PS5 Square / Xbox X (west button)
+    pp.MaxActivationDistance = 6
+    pp.RequiresLineOfSight   = true
+    pp.UIOffset = Vector2.new(0, -12)
+    pp.Exclusivity = Enum.ProximityPromptExclusivity.OnePerButton
+    pp.Parent      = core
+
+	pp.Triggered:Connect(function(plr)
 		local ownerId = plot:GetAttribute("OwnerUserId") or 0
 		if ownerId ~= 0 and plr.UserId ~= ownerId then return end
-		local opts, def = unlockedCheckpointsFor(plot)
-		RE_OpenCP:FireClient(plr, { options = opts, default = def })
+
+		local opts, maxCP = unlockedCheckpointsFor(plot)   -- uses WAVE_CHECKPOINT_INTERVAL
+		RE_OpenCP:FireClient(plr, { options = opts, default = maxCP, from = "prompt_marker" })
 	end)
 
-	return ped
+    return pp
 end
 
 -- === Player flow / claim ===
@@ -2034,7 +2051,7 @@ local function claimPlot(plot, player)
 	if hum then hum.Health = hum.MaxHealth end
 	setCombatLock(plot, true)
 	createTotemPrompt(plot, player)      -- start-wave prompt on the totem
-	wireCheckpointPedestal(plot, player) -- <-- ALWAYS wire the pedestal (idempotent)
+	wireCheckpointMarker(plot, player)
 	createPortalPrompt(plot, player)     -- legacy stub (harmless)
 
 	-- NEW: re-assert idle & do a hard settle a tick later

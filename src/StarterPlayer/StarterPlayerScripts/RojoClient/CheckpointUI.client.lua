@@ -69,6 +69,7 @@ local function clearChildren(p)
 end
 
 RE_Open.OnClientEvent:Connect(function(payload)
+    if not payload or payload.from ~= "prompt_marker" then return end
 	gui.Enabled = true
 	clearChildren(list)
 	local opts    = (payload and payload.options) or (function()

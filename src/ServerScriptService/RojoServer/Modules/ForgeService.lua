@@ -77,9 +77,6 @@ function Forge:Offers(plr, wave)
 	local run = self:GetRun(plr)
 	local waveNum = tonumber(wave) or 1
 	local segNow = segIdFromWave(waveNum)
-    -- in Offers(), after computing waveNum / segNow:
-    local zone = 1 + math.floor((waveNum-1)/30)  -- 30-wave zones, example
-    local blessPrice = 100 * zone
 
 	-- reset per-segment counters
 	if run.segId ~= segNow then
