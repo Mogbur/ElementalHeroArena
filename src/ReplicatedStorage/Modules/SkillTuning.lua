@@ -31,6 +31,12 @@ local CLIENT = {
 	FIRE_RANGE = Skills.firebolt.range,
 }
 
+local BLESS = {
+    FireDmgMul     = 1.20,  -- firebolt & its DoT
+    EarthDmgMul    = 1.20,  -- quakepulse cone
+    WaterShieldMul = 1.20,  -- aquabarrier shield (+ aura if you want)
+}
+
 local function Stat(id, lvl)
 	id = tostring(id or ""):lower()
 	local L = math.clamp(lvl or 1, 1, MAX)
@@ -72,4 +78,6 @@ return {
 	CLIENT = CLIENT,
 	Client = CLIENT,
 	Stat = Stat,
+	-- NEW: blessings exported here
+	BLESS = BLESS,
 }

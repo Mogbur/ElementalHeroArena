@@ -32,7 +32,7 @@ local CORE_POOL = {
 local UTIL_POOL = {
 	{id="RECOVER",     name="Recover to 60% HP",           price=120},
 	{id="SECOND_WIND", name="Second Wind (+1 life)",       price=160},
-	{id="OVERCHARGE",  name="Overcharge (+25% Core)",      price=160},
+	{id="OVERCHARGE",  name="Overcharge (+20% Core)",      price=160},
 	{id="AEGIS",       name="Aegis (Shield ~20% Max HP)",  price=120},
 }
 
@@ -466,34 +466,65 @@ function Forge:Buy(plr, _waveFromClient, choice)
 		return true, { core = run.core }
 	end
 
-	-- UTILITY buy (segment-limited)
-	if choice.type == "UTIL" then
+	elseif choice.type == "UTIL" then
 		local util = offers.util; if not util then return false, "no_util" end
-		if money.Value < util.price then return false, "poor" end
-		money.Value -= util.price
+		local waveNum = tonumber(plot:GetAttribute("CurrentWave")) or 1
+		local segNow  = segIdFromWave(waveNum)
 
 		if util.id == "RECOVER" then
 			local hero = plot:FindFirstChild("Hero", true)
-			local hum = hero and hero:FindFirstChildOfClass("Humanoid")
-			if hum then
-				local target = math.floor(hum.MaxHealth * 0.60 + 0.5)
-				if hum.Health < target then hum.Health = target end
-			end
+			local hum  = hero and hero:FindFirstChildOfClass("Humanoid")
+			if not hum then return false, "no_hero" end
+			if hum.Health >= hum.MaxHealth then return false, "max" end  -- block at full HP
+			if money.Value < util.price then return false, "poor" end
+			money.Value -= util.price
+
+			-- heal +60% MaxHealth (additive), capped to full
+			local add = math.floor(hum.MaxHealth * 0.60 + 0.5)
+			hum.Health = math.min(hum.MaxHealth, hum.Health + add)
+
+			pushHUD(plr, plot)
 			return true, { util = "RECOVER" }
 
 		elseif util.id == "AEGIS" then
 			local hero = plot:FindFirstChild("Hero", true)
-			if hero then grantAegisShield(hero, 0.20) end
+			if not hero then return false, "no_hero" end
+
+			-- one per segment
+			local aegisSeg = tonumber(plot:GetAttribute("Util_AegisSeg")) or -999
+			if aegisSeg == segNow then return false, "max" end
+			if money.Value < util.price then return false, "poor" end
+			money.Value -= util.price
+
+			grantAegisShield(hero, 0.20)
+			plot:SetAttribute("Util_AegisSeg", segNow) -- remember we bought it this segment
+			pushHUD(plr, plot)
 			return true, { util = "AEGIS" }
 
 		elseif util.id == "OVERCHARGE" then
-			plot:SetAttribute("Util_OverchargePct", 25)
-			plot:SetAttribute("UtilExpiresSegId", run.segId)
+			-- once per segment
+			local activePct = tonumber(plot:GetAttribute("Util_OverchargePct")) or 0
+			local segSet    = plot:GetAttribute("UtilExpiresSegId")
+			if activePct > 0 and segSet == segNow then return false, "max" end
+			if money.Value < util.price then return false, "poor" end
+			money.Value -= util.price
+
+			plot:SetAttribute("Util_OverchargePct", 20)
+			plot:SetAttribute("UtilExpiresSegId", segNow)
+			pushHUD(plr, plot)
 			return true, { util = "OVERCHARGE" }
 
 		elseif util.id == "SECOND_WIND" then
+			-- one stack per segment
+			local swLeft = tonumber(plot:GetAttribute("Util_SecondWindLeft")) or 0
+			local segSet = plot:GetAttribute("UtilExpiresSegId")
+			if swLeft > 0 and segSet == segNow then return false, "max" end
+			if money.Value < util.price then return false, "poor" end
+			money.Value -= util.price
+
 			plot:SetAttribute("Util_SecondWindLeft", 1)
-			plot:SetAttribute("UtilExpiresSegId", run.segId)
+			plot:SetAttribute("UtilExpiresSegId", segNow)
+			pushHUD(plr, plot)
 			return true, { util = "SECOND_WIND" }
 		end
 

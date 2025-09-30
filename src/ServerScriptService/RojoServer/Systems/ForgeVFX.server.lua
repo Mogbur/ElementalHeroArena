@@ -14,6 +14,8 @@ local WHITE = Color3.new(1, 1, 1)
 local FIRE  = Color3.fromRGB(255, 90, 60)
 local EARTH = Color3.fromRGB(170,130,90)
 local WATER = Color3.fromRGB( 80,140,255)
+-- put near top with your FIRE/EARTH/WATER constants:
+local COLOR_BY = { Fire = FIRE, Water = WATER, Earth = EARTH }
 
 -- Utility: tag any effect part to be non-physical
 local function tagEffect(p)
@@ -226,23 +228,78 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		return
 	end
 
-	-- === Blessing pylon highlight ===
+	-- === Blessing pylon highlight (tint + particles) ===
+	-- Neon tint + aura particles when a pylon is the active blessing.
+	local function setPylonTint(pylon: Instance, col: Color3?)
+		for _, d in ipairs(pylon:GetDescendants()) do
+			if d:IsA("BasePart") then
+				if d:GetAttribute("__PreMat") == nil then d:SetAttribute("__PreMat", tostring(d.Material)) end
+				if d:GetAttribute("__PreCol") == nil then
+					local c = d.Color
+					d:SetAttribute("__PreCol", string.format("%d,%d,%d", c.R*255, c.G*255, c.B*255))
+				end
+				if col then
+					d.Material = Enum.Material.Neon
+					d.Color = col
+				else
+					local preM = d:GetAttribute("__PreMat")
+					local preC = d:GetAttribute("__PreCol")
+					if preM then pcall(function() d.Material = Enum.Material[preM] end) end
+					if preC then
+						local r,g,b = preC:match("([^,]+),([^,]+),([^,]+)")
+						if r and g and b then d.Color = Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
+					end
+				end
+			end
+		end
+
+		-- simple aura emitter on the first BasePart
+		local part
+		for _, d in ipairs(pylon:GetDescendants()) do if d:IsA("BasePart") then part = d; break end end
+		if part then
+			local att = part:FindFirstChild("BlessAuraAtt") or Instance.new("Attachment", part)
+			att.Name = "BlessAuraAtt"
+			local pe = att:FindFirstChild("BlessAura") or Instance.new("ParticleEmitter", att)
+			pe.Name = "BlessAura"
+			pe.LockedToPart = true
+			pe.Rate = 14
+			pe.Speed = NumberRange.new(1,4)
+			pe.Lifetime = NumberRange.new(0.8,1.4)
+			pe.Size = NumberSequence.new{
+				NumberSequenceKeypoint.new(0, 0.6),
+				NumberSequenceKeypoint.new(1, 0.0),
+			}
+			pe.SpreadAngle = Vector2.new(18,18)
+			pe.Enabled = (col ~= nil)
+			if col then pe.Color = ColorSequence.new(col) end
+		end
+	end
+
 	local function clearHL()
 		for _, P in ipairs({FirePylon, EarthPylon, WaterPylon}) do
 			local h = P:FindFirstChild("BlessHL"); if h then h:Destroy() end
 			local l = P:FindFirstChild("BlessLight"); if l then l:Destroy() end
+			setPylonTint(P, nil) -- restore original look + disable aura
 		end
 	end
 
 	local function applyHL(elem)
 		clearHL()
-		local target = (elem=="Fire" and FirePylon) or (elem=="Earth" and EarthPylon) or (elem=="Water" and WaterPylon) or nil
+		local target =
+			(elem == "Fire"  and FirePylon)  or
+			(elem == "Earth" and EarthPylon) or
+			(elem == "Water" and WaterPylon) or nil
 		if not target then return end
+
+		local col = COLOR_BY[elem] or Color3.new(1,1,1)
+
 		local hl = Instance.new("Highlight")
 		hl.Name = "BlessHL"
 		hl.Adornee = target
-		hl.FillTransparency = 0.8
+		hl.FillTransparency = 0.85
 		hl.OutlineTransparency = 0
+		hl.FillColor = col
+		hl.OutlineColor = col
 		hl.Parent = target
 
 		local p = firstPart(target)
@@ -251,14 +308,16 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 			pl.Name = "BlessLight"
 			pl.Range = 12
 			pl.Brightness = 2
-			pl.Color = (elem=="Fire" and FIRE) or (elem=="Earth" and EARTH) or WATER
+			pl.Color = col
 			pl.Parent = p
-			-- gentle pulse
 			local ti = TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
 			TweenService:Create(pl, ti, {Brightness = 3}):Play()
 		end
+
+		setPylonTint(target, col) -- neon tint + enable aura
 	end
 
+	-- drive highlight on BlessingElem changes
 	local plot = plotOf(Forge)
 	local function onBlessChange()
 		if not plot then return end

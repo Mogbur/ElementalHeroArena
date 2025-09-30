@@ -22,6 +22,30 @@ frame.BackgroundTransparency = 0.06
 frame.Parent = gui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
 
+local UIS = game:GetService("UserInputService")
+
+local close = Instance.new("TextButton")
+close.Name = "Close"
+close.Text = "×"
+close.Font = Enum.Font.GothamBold
+close.TextScaled = true
+close.TextColor3 = Color3.fromRGB(230,235,255)
+close.Size = UDim2.fromOffset(32,32)
+close.Position = UDim2.new(1, -36, 0, 8)
+close.BackgroundColor3 = Color3.fromRGB(42,46,64)
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+close.Parent = frame
+
+close.Activated:Connect(function() gui.Enabled = false end)
+
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if not gui.Enabled then return end
+	if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB then
+		gui.Enabled = false
+	end
+end)
+
 local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Font = Enum.Font.GothamBold

@@ -95,6 +95,7 @@ local DEFAULT_ATTRS = {
 	CritChance   = 0.03,
 	CritMult     = 2.0,
 	WaveStarting = false,
+	MaxClearedWave = 0,
 }
 local START_INVULN_SEC = 0.90 -- was 0.35
 
@@ -497,19 +498,17 @@ RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
     end
 
     -- build the unlocked checkpoint list based on last cleared wave
-    local function unlockedList()
-        local current = plot:GetAttribute("CurrentWave") or 1
-        local lastCleared = math.max(0, current - 1)
-        local maxCP = 1
-        if lastCleared >= 1 then
-            maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
-        end
-        local list = {}
-        for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do
-            table.insert(list, w)
-        end
-        return list
-    end
+	local function unlockedList()
+		-- use real cleared progress, not current-1
+		local lastCleared = tonumber(plot:GetAttribute("HighestClearedWave")) or 0
+		local maxCP = 1
+		if lastCleared >= 1 then
+			maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
+		end
+		local list = {}
+		for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(list, w) end
+		return list
+	end
 
     if verb == "options" then
         return unlockedList()
@@ -607,17 +606,14 @@ local function preWaveGuard(hero: Model, sec: number?)
 end
 
 local function unlockedCheckpointsFor(plot: Model)
-	local current = plot:GetAttribute("CurrentWave") or 1
-	local lastCleared = math.max(0, current - 1)
-	local maxCP = 1
-	if lastCleared >= 1 then
-		maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
-	end
-	local list = {}
-	for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do
-		table.insert(list, w)
-	end
-	return list, maxCP
+    local lastCleared = tonumber(plot:GetAttribute("HighestClearedWave")) or 0
+    local maxCP = 1
+    if lastCleared >= 1 then
+        maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
+    end
+    local list = {}
+    for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(list, w) end
+    return list, maxCP
 end
 
 -- === Spawn volumes (optional designer controls) ===
@@ -1458,15 +1454,18 @@ local function spawnWave(plot, portal)
 end
 end
 
-local function rewardAndAdvance(plot)
-	local waveIdx = plot:GetAttribute("CurrentWave") or 1
-	local W = Waves.get(waveIdx)
+local function rewardAndAdvance(plot, clearedWave)
+	local W = Waves.get(clearedWave)
 	local plr = plotToPlayer[plot]
 	if plr and plr:FindFirstChild("leaderstats") and plr.leaderstats:FindFirstChild("Money") then
 		plr.leaderstats.Money.Value += W.rewardMoney
 	end
 	plot:SetAttribute("Seeds", (plot:GetAttribute("Seeds") or 0) + W.rewardSeeds)
-	plot:SetAttribute("CurrentWave", waveIdx + 1)
+
+	-- progress
+	plot:SetAttribute("CurrentWave", clearedWave + 1)
+	local maxC = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
+	if clearedWave > maxC then plot:SetAttribute("MaxClearedWave", clearedWave) end
 end
 
 local function cleanupLeftovers(plot)
@@ -1729,7 +1728,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			task.wait(CHECK_PERIOD)
 		end
 
-		rewardAndAdvance(plot)
+		rewardAndAdvance(plot, startWave)
 		if plr then RE_WaveText:FireClient(plr, {kind="result", result="Victory", wave=startWave}) end
 
 		-- keep forge hidden between non-checkpoint waves
@@ -1755,7 +1754,7 @@ local function runFightLoop(plot, portal, owner, opts)
 			setCombatLock(plot, true)
 			setModelFrozen(hero, false)                    -- make sure he can move to the shrine
 			teleportHeroTo(plot, ARENA_HERO_SPAWN)        -- "07_HeroArenaAnchor"
-			hero:SetAttribute("BarsVisible", 0)
+			hero:SetAttribute("BarsVisible", 1)           -- keep bars visible during shrine
 			plot:SetAttribute("AtIdle", false)            -- we're pausing, not going to idle stands
 
 			-- Middle-of-arena shrine

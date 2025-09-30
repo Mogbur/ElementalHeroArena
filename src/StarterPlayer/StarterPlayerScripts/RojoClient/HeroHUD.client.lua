@@ -25,6 +25,23 @@ local function myPlot()
 	end
 end
 
+local function segIdFromWave(w) w = tonumber(w) or 1; return math.floor((w-1)/5) end
+
+local function refreshBuffs()
+    if not (attachedPlot and attachedHero) then BuffRow.Visible=false; return end
+    local segNow = segIdFromWave(attachedPlot:GetAttribute("CurrentWave") or 1)
+    local ocPct  = tonumber(attachedPlot:GetAttribute("Util_OverchargePct")) or 0
+    local utilSeg= tonumber(attachedPlot:GetAttribute("UtilExpiresSegId")) or -999
+    local swLeft = tonumber(attachedPlot:GetAttribute("Util_SecondWindLeft")) or 0
+    local shp    = tonumber(attachedHero:GetAttribute("ShieldHP")) or 0
+
+    I_OC.Visible = (ocPct > 0) and (utilSeg == segNow)
+    I_SW.Visible = (swLeft > 0) and (utilSeg == segNow)
+    I_AG.Visible = (shp   > 0)
+
+    BuffRow.Visible = (I_OC.Visible or I_SW.Visible or I_AG.Visible)
+end
+
 local function myHero()
 	local p = myPlot()
 	if not p then return end
@@ -59,7 +76,7 @@ local function buildGui()
 	local bb = Instance.new("BillboardGui")
 	bb.Name = "HeroHUD"
 	bb.AlwaysOnTop = true
-	bb.Size = UDim2.fromOffset(160, 28)  -- total height: HP 16 + pad 2 + Shield 8 + pad 2
+	bb.Size = UDim2.fromOffset(160, 40)  -- total height: HP 16 + pad 2 + Shield 8 + pad 2
 	bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
 	bb.MaxDistance = 250
 
@@ -74,6 +91,35 @@ local function buildGui()
 	list.VerticalAlignment = Enum.VerticalAlignment.Center
 	list.Padding = UDim.new(0, 2)
 	list.Parent = root
+
+	-- BUFF ROW (top, tiny)
+	local BuffRow = Instance.new("Frame")
+	BuffRow.Name = "BuffRow"
+	BuffRow.Size = UDim2.new(1, 0, 0, 10)
+	BuffRow.BackgroundTransparency = 1
+	BuffRow.Parent = root
+	BuffRow.LayoutOrder = -1 -- sit above HP bar
+	local hlist = Instance.new("UIListLayout", BuffRow)
+	hlist.FillDirection = Enum.FillDirection.Horizontal
+	hlist.Padding = UDim.new(0, 2)
+	hlist.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	hlist.VerticalAlignment   = Enum.VerticalAlignment.Center
+	local function mkI(txt)
+		local t = Instance.new("TextLabel")
+		t.Size = UDim2.fromOffset(16, 10)
+		t.BackgroundColor3 = Color3.fromRGB(36,42,64)
+		t.BackgroundTransparency = 0.25
+		t.TextColor3 = Color3.fromRGB(230,235,255)
+		t.Font = Enum.Font.GothamBold
+		t.TextScaled = true
+		t.Text = txt
+		t.Visible = false
+		t.Parent = BuffRow
+		return t
+	end
+	local I_OC = mkI("⚡")
+	local I_AG = mkI("🛡")
+	local I_SW = mkI("♥")
 
 	-- HP BAR (16 px)
 	local HPBack = Instance.new("Frame")
@@ -203,6 +249,16 @@ local function attach()
     end
 	bb.Parent = h
 	bb.Adornee = pp
+	-- in attach(), after setting attachedPlot/attachedHero:
+	if attachedPlot then
+		for _,n in ipairs({"Util_OverchargePct","Util_SecondWindLeft","UtilExpiresSegId","CurrentWave"}) do
+			attachedPlot:GetAttributeChangedSignal(n):Connect(refreshBuffs)
+		end
+	end
+	if attachedHero then
+		attachedHero:GetAttributeChangedSignal("ShieldHP"):Connect(refreshBuffs)
+	end
+	refreshBuffs()
 
 	-- vertically anchor once and refresh occasionally
 	local oy = offsetYFor(h)
@@ -266,6 +322,7 @@ RunService.Heartbeat:Connect(function(dt)
 	-- Visibility + numbers every frame (cheap)
 	updateVisibility()
 	updateNumbers()
+	refreshBuffs()
 
 	-- Re-check position ~4x a second
 	tAccum += dt

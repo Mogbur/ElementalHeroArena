@@ -401,17 +401,36 @@ function Brain.attach(hero: Model)
 		end
 		return n
 	end
+	local function currentSegId(plot)
+		local w = tonumber(plot:GetAttribute("CurrentWave")) or 1
+		return ((w - 1) // 5)
+	end
 
 	local function findPlot(): Model?
-		local cur = hero
+		-- start above the hero and remember the highest ancestor with OwnerUserId
+		local cur = hero.Parent
+		local best = nil
 		while cur do
 			if cur:IsA("Model") and cur:GetAttribute("OwnerUserId") ~= nil then
-				return cur
+				best = cur
 			end
 			cur = cur.Parent
 		end
+		return best
+	end
+
+	local function getBlessElem()
+		local plot = findPlot(); if not plot then return nil end
+		local elemRaw = plot:GetAttribute("BlessingElem")
+		local elem = tostring(elemRaw or ""):lower() -- normalize
+		local expires = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -1
+		if (elem == "fire" or elem == "water" or elem == "earth")
+			and (expires < 0 or currentSegId(plot) <= expires) then
+			return elem -- return lowercase token
+		end
 		return nil
 	end
+
 	local function isCombatLocked(): boolean
 		local plot = findPlot()
 		return plot and (plot:GetAttribute("CombatLocked") == true) or false
@@ -587,6 +606,10 @@ function Brain.attach(hero: Model)
 			end
 			bolt:Destroy()
 			local base = fireboltDamage(lv)
+			local be = getBlessElem()
+			if be == "fire" then
+				base = math.floor(base * ((T.BLESS and T.BLESS.FireDmgMul) or 1.20) + 0.5)
+			end
 			applyDamage(target, base, Color3.fromRGB(255,140,70), true)
 			local dotFrac = fireboltDotFrac(lv)
 			if dotFrac > 0 then
@@ -627,6 +650,10 @@ function Brain.attach(hero: Model)
 		local hits = getEnemiesInCone(hrp.Position, hrp.CFrame.LookVector, QUAKE_RANGE, QUAKE_ANGLE)
 		if #hits == 0 then return end
 		local base = quakeDamage(lv) * quakeConeFrac(lv)
+		local be = getBlessElem()
+		if be == "earth" then
+			base = math.floor(base * ((T.BLESS and T.BLESS.EarthDmgMul) or 1.20) + 0.5)
+		end
 		for _, e in ipairs(hits) do
 			applyDamage(e, base, Color3.fromRGB(200,170,120), true)
 		end
@@ -648,9 +675,19 @@ function Brain.attach(hero: Model)
 		local L = math.clamp(lv, 1, T.MAX_LEVEL)
 
 		-- Shield
-		local shieldMax = (SAqua.shield and SAqua.shield[L]) or 0
+		local be = getBlessElem()
+		local blessMul = (be == "water") and ((T.BLESS and T.BLESS.WaterShieldMul) or 1.20) or 1
+		local shieldMax = math.floor(((SAqua.shield and SAqua.shield[L]) or 0) * blessMul + 0.5)
 		local duration  = tonumber(SAqua.duration) or (T.AQUA_DURATION or 6)
-
+		print(("[AquaDbg] L=%d base=%d bless=%s mul=%.2f final=%d")
+			:format(L, (SAqua.shield and SAqua.shield[L]) or 0, tostring(be), blessMul, shieldMax))
+		do local plot=findPlot()
+			print(("[BlessDbg] plot=%s elem=%s expires=%s seg=%s")
+				:format(plot and plot.Name or "nil",
+						tostring(plot and plot:GetAttribute('BlessingElem')),
+						tostring(plot and plot:GetAttribute('BlessingExpiresSegId')),
+						tostring(plot and plot and currentSegId(plot) or "?")))
+		end
 		hero:SetAttribute("ShieldMax",      shieldMax)
 		hero:SetAttribute("ShieldHP",       shieldMax)
 		hero:SetAttribute("ShieldExpireAt", os.clock() + duration)

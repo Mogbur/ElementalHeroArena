@@ -17,9 +17,8 @@ local VIEW_DISTANCE   = 160
 local markers = {}
 local TAG = "[CheckpointMarkers]"
 
-local function waveToCheckpoint(currentWave: number?): number
-	currentWave = tonumber(currentWave) or 1
-	local lastCleared = math.max(0, currentWave - 1)
+local function waveToCheckpointFromCleared(lastCleared: number?): number
+	lastCleared = tonumber(lastCleared) or 0
 	if lastCleared < 1 then return 1 end
 	return ((lastCleared - 1) // 5) * 5 + 1
 end
@@ -112,8 +111,10 @@ local function setupMarkerForPlot(plot: Instance)
 	end
 
 	local gui, label = mkWorldNumber(core)
-	local cp = waveToCheckpoint(plot:GetAttribute("CurrentWave"))
+	local cleared = plot:GetAttribute("HighestClearedWave")
+	local cp = waveToCheckpointFromCleared(cleared)
 	label.Text = tostring(cp)
+	rec.lastShown = cp
 
 	local rec = {
 		rings        = rings,
@@ -139,8 +140,8 @@ local function setupMarkerForPlot(plot: Instance)
 	refreshPrompt()
 	plot:GetAttributeChangedSignal("OwnerUserId"):Connect(refreshPrompt)
 
-	plot:GetAttributeChangedSignal("CurrentWave"):Connect(function()
-		local newCP = waveToCheckpoint(plot:GetAttribute("CurrentWave"))
+	plot:GetAttributeChangedSignal("HighestClearedWave"):Connect(function()
+		local newCP = waveToCheckpointFromCleared(plot:GetAttribute("HighestClearedWave"))
 		if newCP ~= rec.lastShown then
 			rec.lastShown = newCP
 			rec.label.Text = tostring(newCP)

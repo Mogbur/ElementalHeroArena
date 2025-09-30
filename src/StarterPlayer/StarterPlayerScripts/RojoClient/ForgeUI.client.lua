@@ -246,6 +246,8 @@ local function showErrorMessage(card, key)
 		bad_choice = "Bad choice",
 		error      = "Server error",
 		max        = "Already at MAX",   -- << add this line
+		full       = "Already full HP",      -- NEW
+		active     = "Already active",       -- NEW (same segment)
 	}
 	local msg = map[key] or tostring(key or "failed")
 	task.defer(function()

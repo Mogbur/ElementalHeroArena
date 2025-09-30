@@ -201,12 +201,10 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
 			local coreC = 0.08 * t
 
-			-- Overcharge is segment-limited
-			local curWave = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
-			local curSeg  = math.floor((curWave - 1) / 5)
-			local activeSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId"))
-			if (srcPlot:GetAttribute("Util_OverchargePct") or 0) > 0 and activeSeg == curSeg then
-				coreC = coreC * 1.25 -- +25% to the core effect itself
+			-- Overcharge is segment-limited and reads the actual % you set
+			local ocPct = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
+			if ocPct > 0 and activeSeg == curSeg then
+				coreC = coreC * (1 + ocPct/100)
 			end
 
 			outDmg = outDmg * (1 + coreC)
