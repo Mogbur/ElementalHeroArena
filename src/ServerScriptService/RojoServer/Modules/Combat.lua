@@ -228,8 +228,9 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			local activeSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -1
 			local ocPct     = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
 
-			if ocPct > 0 and activeSeg == curSeg then
-				outDmg = outDmg * (1 + ocPct/100)   -- e.g. 20% => x1.20
+			local utilSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -999
+			if ocPct > 0 and utilSeg == curSeg(srcPlot) then
+				coreC *= (1 + ocPct/100)
 			end
 		end
 	end

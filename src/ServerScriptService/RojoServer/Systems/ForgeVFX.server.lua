@@ -305,7 +305,13 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		for _, P in ipairs({FirePylon, EarthPylon, WaterPylon}) do
 			local h = P:FindFirstChild("BlessHL"); if h then h:Destroy() end
 			local l = P:FindFirstChild("BlessLight"); if l then l:Destroy() end
-			setPylonTint(P, nil) -- restore original look + disable aura
+			-- restore material/color + turn off our aura
+			setPylonTint(P, nil)
+
+			-- NEW: kill any and all emitters under pylons
+			for _, d in ipairs(P:GetDescendants()) do
+				if d:IsA("ParticleEmitter") then d.Enabled = false end
+			end
 		end
 	end
 
