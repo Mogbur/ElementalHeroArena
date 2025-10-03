@@ -30,7 +30,7 @@ local CORE_POOL = {
 
 -- Utilities: lasts 1 segment (5 waves)
 local UTIL_POOL = {
-	{id="RECOVER",     name="Recover to 60% HP",           price=120},
+	{id="RECOVER",     name="Heal for 60% Max Health",     price=120},
 	{id="SECOND_WIND", name="Second Wind (+1 life)",       price=160},
 	{id="OVERCHARGE",  name="Overcharge (+20% Core)",      price=160},
 	{id="AEGIS",       name="Aegis (Shield ~20% Max HP)",  price=120},
@@ -154,15 +154,23 @@ local function ownerPlayer(plot)
     return Players:GetPlayerByUserId(uid)
 end
 
-local function grantAegisShield(heroModel: Model, frac)
-	local hum = heroModel and heroModel:FindFirstChildOfClass("Humanoid")
+-- Simple shield helper used by AEGIS
+local function grantAegisShield(hero: Model, frac: number, seconds: number?)
+	frac    = tonumber(frac) or 0.20   -- 20%
+	seconds = tonumber(seconds) or 9000  -- optional duration if you want it timed
+
+	local hum = hero and hero:FindFirstChildOfClass("Humanoid")
 	if not hum then return end
-	local maxHp = math.max(1, hum.MaxHealth)
-	local shield = math.floor(maxHp * (frac or 0.20) + 0.5)
-	heroModel:SetAttribute("ShieldBaseMax", shield)  -- <— baseline (durable portion)
-	heroModel:SetAttribute("ShieldMax", shield)
-	heroModel:SetAttribute("ShieldHP",  shield)
-	heroModel:SetAttribute("ShieldExpireAt", 0) -- segment-based; we’ll just let it soak
+	local max = math.max(1, math.floor(hum.MaxHealth + 0.5))
+	local pool = math.max(1, math.floor(max * frac + 0.5))
+
+	hero:SetAttribute("ShieldHP", pool)
+	hero:SetAttribute("ShieldMax", pool)
+	if seconds and seconds > 0 then
+		hero:SetAttribute("ShieldExpireAt", os.clock() + seconds)
+	else
+		hero:SetAttribute("ShieldExpireAt", 0)
+	end
 end
 
 local function rerollTarget(self, plr, plot, waveNum)
@@ -466,7 +474,7 @@ function Forge:Buy(plr, _waveFromClient, choice)
 		return true, { core = run.core }
 	end
 
-	elseif choice.type == "UTIL" then
+	if choice.type == "UTIL" then
 		local util = offers.util; if not util then return false, "no_util" end
 		local waveNum = tonumber(plot:GetAttribute("CurrentWave")) or 1
 		local segNow  = segIdFromWave(waveNum)
@@ -483,7 +491,6 @@ function Forge:Buy(plr, _waveFromClient, choice)
 			local add = math.floor(hum.MaxHealth * 0.60 + 0.5)
 			hum.Health = math.min(hum.MaxHealth, hum.Health + add)
 
-			pushHUD(plr, plot)
 			return true, { util = "RECOVER" }
 
 		elseif util.id == "AEGIS" then
@@ -498,7 +505,7 @@ function Forge:Buy(plr, _waveFromClient, choice)
 
 			grantAegisShield(hero, 0.20)
 			plot:SetAttribute("Util_AegisSeg", segNow) -- remember we bought it this segment
-			pushHUD(plr, plot)
+			plot:SetAttribute("UtilExpiresSegId", segNow) -- add this line for consistency
 			return true, { util = "AEGIS" }
 
 		elseif util.id == "OVERCHARGE" then
@@ -511,7 +518,6 @@ function Forge:Buy(plr, _waveFromClient, choice)
 
 			plot:SetAttribute("Util_OverchargePct", 20)
 			plot:SetAttribute("UtilExpiresSegId", segNow)
-			pushHUD(plr, plot)
 			return true, { util = "OVERCHARGE" }
 
 		elseif util.id == "SECOND_WIND" then
@@ -524,7 +530,6 @@ function Forge:Buy(plr, _waveFromClient, choice)
 
 			plot:SetAttribute("Util_SecondWindLeft", 1)
 			plot:SetAttribute("UtilExpiresSegId", segNow)
-			pushHUD(plr, plot)
 			return true, { util = "SECOND_WIND" }
 		end
 

@@ -41,6 +41,16 @@ local function findEnemyModel(inst: Instance)
 	return nil
 end
 
+local function plotByOwner(userId)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return nil end
+	for _,p in ipairs(plots:GetChildren()) do
+		if p:IsA("Model") and (p:GetAttribute("OwnerUserId") or 0) == userId then
+			return p
+		end
+	end
+end
+
 -- segment id from a plot's CurrentWave
 local function segId(plot: Instance)
 	local w = tonumber(plot and plot:GetAttribute("CurrentWave")) or 1
@@ -180,37 +190,50 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	local outDmg, flags = outgoingFromStyle(sourcePlayer, baseDamage or 0, isBasic == true)
 
 	-- Identify source plot once; used by ATK core, Blessing, etc.
-	local srcPlot = sourcePlayer and sourcePlayer.Character and plotOf(sourcePlayer.Character) or nil
+	local srcPlot = nil
+	if sourcePlayer then
+		srcPlot = sourcePlayer.Character and plotOf(sourcePlayer.Character) or nil
+		if not srcPlot then
+			srcPlot = plotByOwner(sourcePlayer.UserId)
+		end
+	end
 
 	-- Blessing rider: if caller didn't specify an element, default to the active Blessing for this segment
 	do
 		if not attackElem or attackElem == "Neutral" then
 			if srcPlot then
-				local bElem = srcPlot:GetAttribute("BlessingElem")
-				local bSeg  = tonumber(srcPlot:GetAttribute("BlessingExpiresSegId")) or -999
-				if bElem and bSeg == segId(srcPlot) then
+				local w = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
+				local curSeg = (w - 1) // 5
+				local bElem  = srcPlot:GetAttribute("BlessingElem")
+				local bSeg   = tonumber(srcPlot:GetAttribute("BlessingExpiresSegId")) or -999
+				if bElem and bSeg == curSeg then
 					attackElem = bElem
 				end
 			end
 		end
 	end
 
-	-- >>> ATK core (+8% per tier) from the attacker's plot, with Overcharge (+25% core effect)
+	-- >>> ATK core and Overcharge
 	do
-		if srcPlot and (srcPlot:GetAttribute("CoreId") == "ATK") then
-			local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
-			local coreC = 0.08 * t
-
-			-- Overcharge is segment-limited and reads the actual % you set
-			local ocPct = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
-			if ocPct > 0 and activeSeg == curSeg then
-				coreC = coreC * (1 + ocPct/100)
+		if srcPlot then
+			-- 1) Core ATK (+8% per tier)
+			if (srcPlot:GetAttribute("CoreId") == "ATK") then
+				local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
+				outDmg = outDmg * (1 + 0.08 * t)
 			end
 
-			outDmg = outDmg * (1 + coreC)
+			-- 2) Overcharge: flat % damage while active in this 5-wave segment
+			local curWave   = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
+			local curSeg    = (curWave - 1) // 5
+			local activeSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -1
+			local ocPct     = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
+
+			if ocPct > 0 and activeSeg == curSeg then
+				outDmg = outDmg * (1 + ocPct/100)   -- e.g. 20% => x1.20
+			end
 		end
 	end
-	-- <<< ATK core (+ Overcharge)
+	-- <<< ATK core and Overcharge
 
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then

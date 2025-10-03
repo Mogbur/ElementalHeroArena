@@ -134,6 +134,7 @@ end
 local setSignpost
 local pinFrozenHeroToIdleGround -- forward declaration
 local wireCheckpointMarker   -- ← add this
+local getHero
 
 local function playAt(partOrPos, soundId, vol)
 	if not soundId then return end
@@ -489,44 +490,45 @@ local function setCombatLock(plot, on)
 	end
 end
 
+-- Clears per-run / per-segment utilities + any leftover shield
+local function clearRunUtils(plot: Model)
+	if not plot then return end
+	plot:SetAttribute("Util_OverchargePct", 0)
+	plot:SetAttribute("Util_SecondWindLeft", 0)
+	plot:SetAttribute("UtilExpiresSegId", -999)
+
+	local h = getHero(plot)
+	if h then
+		h:SetAttribute("ShieldHP", 0)
+		h:SetAttribute("ShieldMax", 0)
+		h:SetAttribute("ShieldExpireAt", 0)
+	end
+end
+
 -- === Checkpoint RF handler ===
 RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
-    -- verify the player is bound to a plot
-    local plot = playerToPlot[plr]
-    if not (plot and plotToPlayer[plot] == plr) then
-        return false, "no_plot"
-    end
+  local plot = playerToPlot[plr]
+  if not plot or plotToPlayer[plot] ~= plr then return false, "no_plot" end
 
-    -- build the unlocked checkpoint list based on last cleared wave
-	local function unlockedList()
-		-- use real cleared progress, not current-1
-		local lastCleared = tonumber(plot:GetAttribute("HighestClearedWave")) or 0
-		local maxCP = 1
-		if lastCleared >= 1 then
-			maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
-		end
-		local list = {}
-		for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(list, w) end
-		return list
-	end
+  local function unlockedList()
+    local lastCleared = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
+    local maxCP = (lastCleared >= 1) and (((lastCleared - 1)//5)*5 + 1) or 1
+    local list = {}
+    for w = 1, maxCP, 5 do table.insert(list, w) end
+    return list
+  end
 
-    if verb == "options" then
-        return unlockedList()
-
-    elseif verb == "choose" then
-        local w = tonumber(arg)
-        if not w then return false, "bad_wave" end
-
-        local allowed = {}
-        for _, ww in ipairs(unlockedList()) do allowed[ww] = true end
-        if not allowed[w] then return false, "not_unlocked" end
-
-        plot:SetAttribute("CurrentWave", w)
-        plot:SetAttribute("FullHealOnNextStart", true) -- death => full heal next start
-        return true
-    end
-
-    return false, "bad_verb"
+  if verb == "options" then
+    return unlockedList()
+  elseif verb == "choose" then
+    local w = tonumber(arg); if not w then return false, "bad_wave" end
+    local allowed = {}; for _,v in ipairs(unlockedList()) do allowed[v] = true end
+    if not allowed[w] then return false, "not_unlocked" end
+    plot:SetAttribute("CurrentWave", w)
+    plot:SetAttribute("FullHealOnNextStart", true)
+    return true
+  end
+  return false, "bad_verb"
 end
 
 -- === Helpers ===
@@ -606,11 +608,8 @@ local function preWaveGuard(hero: Model, sec: number?)
 end
 
 local function unlockedCheckpointsFor(plot: Model)
-    local lastCleared = tonumber(plot:GetAttribute("HighestClearedWave")) or 0
-    local maxCP = 1
-    if lastCleared >= 1 then
-        maxCP = ((lastCleared - 1) // WAVE_CHECKPOINT_INTERVAL) * WAVE_CHECKPOINT_INTERVAL + 1
-    end
+    local lastCleared = tonumber(plot:GetAttribute("MaxClearedWave")) or 0  -- ✅
+    local maxCP = (lastCleared >= 1) and (((lastCleared - 1)//WAVE_CHECKPOINT_INTERVAL)*WAVE_CHECKPOINT_INTERVAL + 1) or 1
     local list = {}
     for w = 1, maxCP, WAVE_CHECKPOINT_INTERVAL do table.insert(list, w) end
     return list, maxCP
@@ -743,6 +742,7 @@ local function teleportHeroToIdle(plot: Model)
 	hero:SetAttribute("ShieldHP", 0)
 	hero:SetAttribute("ShieldMax", 0)
 	hero:SetAttribute("ShieldExpireAt", 0)
+	clearRunUtils(plot)
 	plot:SetAttribute("AtIdle", true)
 	-- stand up & heal
 	if hum then
@@ -884,11 +884,13 @@ local function ensureHeroBrain(hero)
 	if not ok then warn("[PlotService] HeroBrain.attach failed:", err) end
 end
 
-local function getHero(plot)
-	local h = plot:FindFirstChild("Hero", true)
-	if h and h:IsA("Model") and h:FindFirstChildOfClass("Humanoid") and h:FindFirstChild("HumanoidRootPart") then
-		return h
-	end
+function getHero(plot)
+    local h = plot:FindFirstChild("Hero", true)
+    if h and h:IsA("Model")
+       and h:FindFirstChildOfClass("Humanoid")
+       and h:FindFirstChild("HumanoidRootPart") then
+        return h
+    end
 end
 
 local function destroyHero(plot)
@@ -1706,6 +1708,10 @@ local function runFightLoop(plot, portal, owner, opts)
 				if cpStart < 1 then cpStart = 1 end
 				plot:SetAttribute("CurrentWave", cpStart)
 				plot:SetAttribute("FullHealOnNextStart", true)
+
+				-- ADD THIS: drop any lingering OC / SW so icons don’t stick
+				clearRunUtils(plot)
+
 				setCombatLock(plot, true)
 				teleportHeroToIdle(plot)
 				cleanupLeftovers_local()
@@ -1813,6 +1819,9 @@ local function startWaveCountdown(plot, portal, owner)
 	hookSpawnHealthGuard(h)           -- guard hook for spawn window
 	preWaveGuard(h, ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("LastHitBy", 0)
+
+	-- ADD THIS: make sure bars are OFF now, so the later “ON” fires a change
+	h:SetAttribute("BarsVisible", 0)
 
 	-- === CHANGED: Dead-state disabled during guard, then restored ===
 	local hum = h and h:FindFirstChildOfClass("Humanoid")

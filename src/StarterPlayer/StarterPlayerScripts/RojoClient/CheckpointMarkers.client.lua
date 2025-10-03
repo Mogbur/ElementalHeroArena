@@ -111,10 +111,9 @@ local function setupMarkerForPlot(plot: Instance)
 	end
 
 	local gui, label = mkWorldNumber(core)
-	local cleared = plot:GetAttribute("HighestClearedWave")
+	local cleared = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
 	local cp = waveToCheckpointFromCleared(cleared)
 	label.Text = tostring(cp)
-	rec.lastShown = cp
 
 	local rec = {
 		rings        = rings,
@@ -140,8 +139,9 @@ local function setupMarkerForPlot(plot: Instance)
 	refreshPrompt()
 	plot:GetAttributeChangedSignal("OwnerUserId"):Connect(refreshPrompt)
 
-	plot:GetAttributeChangedSignal("HighestClearedWave"):Connect(function()
-		local newCP = waveToCheckpointFromCleared(plot:GetAttribute("HighestClearedWave"))
+	plot:GetAttributeChangedSignal("MaxClearedWave"):Connect(function()
+		local c = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
+		local newCP = waveToCheckpointFromCleared(c)
 		if newCP ~= rec.lastShown then
 			rec.lastShown = newCP
 			rec.label.Text = tostring(newCP)

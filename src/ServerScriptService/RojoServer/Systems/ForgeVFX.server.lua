@@ -1,12 +1,12 @@
 -- ForgeVFX.server.lua  (place in ServerScriptService/RojoServer/Systems)
 -- Server-side VFX + prompt hook for the Elemental Forge
 
-local TweenService = game:GetService("TweenService")
+local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris = game:GetService("Debris")
+local Debris            = game:GetService("Debris")
 
--- Remotes (created elsewhere by ForgeRF)
-local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
+-- Remotes: wait for the folder; DO NOT cache OpenForgeUI here
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
 local OpenForgeUI = Remotes and Remotes:FindFirstChild("OpenForgeUI")
 
 -- Colors
@@ -16,6 +16,11 @@ local EARTH = Color3.fromRGB(170,130,90)
 local WATER = Color3.fromRGB( 80,140,255)
 -- put near top with your FIRE/EARTH/WATER constants:
 local COLOR_BY = { Fire = FIRE, Water = WATER, Earth = EARTH }
+local ENABLE_BLESS_PARTICLES = false
+local function curSeg(plot)
+	local w = tonumber(plot and plot:GetAttribute("CurrentWave")) or 1
+	return (w - 1) // 5
+end
 
 -- Utility: tag any effect part to be non-physical
 local function tagEffect(p)
@@ -253,25 +258,46 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 			end
 		end
 
-		-- simple aura emitter on the first BasePart
+		-- simple aura emitter on the first BasePart (disabled by flag)
 		local part
-		for _, d in ipairs(pylon:GetDescendants()) do if d:IsA("BasePart") then part = d; break end end
+		for _, d in ipairs(pylon:GetDescendants()) do
+			if d:IsA("BasePart") then part = d; break end
+		end
 		if part then
-			local att = part:FindFirstChild("BlessAuraAtt") or Instance.new("Attachment", part)
-			att.Name = "BlessAuraAtt"
-			local pe = att:FindFirstChild("BlessAura") or Instance.new("ParticleEmitter", att)
-			pe.Name = "BlessAura"
-			pe.LockedToPart = true
-			pe.Rate = 14
-			pe.Speed = NumberRange.new(1,4)
-			pe.Lifetime = NumberRange.new(0.8,1.4)
-			pe.Size = NumberSequence.new{
-				NumberSequenceKeypoint.new(0, 0.6),
-				NumberSequenceKeypoint.new(1, 0.0),
-			}
-			pe.SpreadAngle = Vector2.new(18,18)
-			pe.Enabled = (col ~= nil)
-			if col then pe.Color = ColorSequence.new(col) end
+			-- always remove any existing aura bits
+			for _, d in ipairs(part:GetDescendants()) do
+				if d:IsA("ParticleEmitter") and d.Name == "BlessAura" then
+					d.Enabled = false
+					d:Destroy()
+				elseif d:IsA("Attachment") and d.Name == "BlessAuraAtt" then
+					d:Destroy()
+				end
+			end
+
+			-- only (re)create if the flag is on
+			if ENABLE_BLESS_PARTICLES and col then
+				local att = Instance.new("Attachment")
+				att.Name = "BlessAuraAtt"
+				att.Parent = part
+
+				local pe = Instance.new("ParticleEmitter")
+				pe.Name = "BlessAura"
+				pe.Parent = att
+				pe.LockedToPart      = false
+				pe.EmissionDirection = Enum.NormalId.Top
+				pe.Acceleration      = Vector3.new(0, 6, 0)
+				pe.Drag              = 2.0
+				pe.Rate              = 16
+				pe.Speed             = NumberRange.new(0.5, 2)
+				pe.Lifetime          = NumberRange.new(0.8, 1.4)
+				pe.Size = NumberSequence.new{
+					NumberSequenceKeypoint.new(0, 0.6),
+					NumberSequenceKeypoint.new(1, 0.0),
+				}
+				pe.SpreadAngle       = Vector2.new(10, 10)
+				pe.Color              = ColorSequence.new(col)
+				pe.Enabled            = true
+			end
 		end
 	end
 
@@ -317,14 +343,24 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		setPylonTint(target, col) -- neon tint + enable aura
 	end
 
-	-- drive highlight on BlessingElem changes
+	-- drive highlight on Blessing state changes
 	local plot = plotOf(Forge)
+
 	local function onBlessChange()
 		if not plot then return end
-		applyHL(plot:GetAttribute("BlessingElem"))
+		local elem   = plot:GetAttribute("BlessingElem")
+		local expSeg = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -999
+		if elem and expSeg == curSeg(plot) then
+			applyHL(elem)
+		else
+			clearHL()
+		end
 	end
+
 	if plot then
 		plot:GetAttributeChangedSignal("BlessingElem"):Connect(onBlessChange)
+		plot:GetAttributeChangedSignal("BlessingExpiresSegId"):Connect(onBlessChange) -- NEW
+		plot:GetAttributeChangedSignal("CurrentWave"):Connect(onBlessChange)          -- NEW
 		task.defer(onBlessChange)
 	end
 
@@ -373,17 +409,14 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 	-- Get the plot up front (so it's in scope for the prompt callback)
 	local plot = plotOf(Forge)
 
-	if OpenForgeUI then
-		prompt.Triggered:Connect(function(player)
-			-- Only the owner should be able to open; PlotService enforces ownership,
-			-- but it’s fine if the UI opens for anyone while CombatLocked is true.
-			if plot then
-				OpenForgeUI:FireClient(player, plot)
-			end
-		end)
-	else
-		warn("[ForgeVFX] OpenForgeUI RemoteEvent not found.")
-	end
+	prompt.Triggered:Connect(function(player)
+		local open = Remotes:FindFirstChild("OpenForgeUI") or Remotes:WaitForChild("OpenForgeUI", 5)
+		if open and plot then
+			open:FireClient(player, plot)
+		else
+			warn("[ForgeVFX] Can't open forge UI (missing RemoteEvent or plot).")
+		end
+	end)
 
 	-- === visibility + portal tied to CombatLocked / WaveStarting ===
 	local function resync()

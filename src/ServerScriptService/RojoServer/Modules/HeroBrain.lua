@@ -142,6 +142,10 @@ function Brain.attach(hero: Model)
 
 	local hum = hero:FindFirstChildOfClass("Humanoid")
 	local hrp = hero:FindFirstChild("HumanoidRootPart") or hero.PrimaryPart
+	do
+		local old = hero:FindFirstChild("HeroBillboard")
+		if old then old:Destroy() end
+	end
 	if not (hum and hrp and hrp:IsA("BasePart")) then
 		warn("[HeroBrain] Missing Humanoid/Root on", hero:GetFullName())
 		return
@@ -290,9 +294,10 @@ function Brain.attach(hero: Model)
 
 		local coreHpMul  = (coreId == "HP")  and bonus or 1
 		local coreSpdMul = (coreId == "HST") and bonus or 1
-		local coreAtkMul = (coreId == "ATK") and bonus or 1  -- NEW
-		-- expose so everything (incl. skills) can read it
-		hero:SetAttribute("__CoreAtkMul", coreAtkMul)
+
+		-- IMPORTANT: Do NOT pre-apply ATK here. Let Combat handle ATK core & OC.
+		-- Keep the attribute around for old code paths, but neutralize it.
+		hero:SetAttribute("__CoreAtkMul", 1)
 
 		-- Max HP = base * style * core(HP)
 		local newMax = math.floor(baseMax * (S.hpMul or 1.0) * coreHpMul + 0.5)
@@ -310,7 +315,7 @@ function Brain.attach(hero: Model)
 
 		-- melee base damage from style (your old logic)
 		local baseMelee = 15
-		MELEE_DAMAGE = math.floor(baseMelee * (S.atkMul or 1.0) * (hero:GetAttribute("__CoreAtkMul") or 1) + 0.5)
+		MELEE_DAMAGE = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
 
 		-- Basic swing cadence = base / (style * core(Haste))
 		local baseSwing = 0.60
@@ -320,6 +325,25 @@ function Brain.attach(hero: Model)
 	applyStyle()
 	hero:GetAttributeChangedSignal("WeaponMain"):Connect(applyStyle)
 	hero:GetAttributeChangedSignal("WeaponOff"):Connect(applyStyle)
+	-- ALSO re-apply style when core changes on the owning plot
+	do
+		local function findPlot()
+			local cur, best = hero.Parent, nil
+			while cur do
+				if cur:IsA("Model") and cur:GetAttribute("OwnerUserId") ~= nil then
+					best = cur
+				end
+				cur = cur.Parent
+			end
+			return best
+		end
+		local plotRef = findPlot()
+		if plotRef and hero:GetAttribute("__CoreWatchHooked") ~= 1 then
+			hero:SetAttribute("__CoreWatchHooked", 1)
+			plotRef:GetAttributeChangedSignal("CoreId"):Connect(applyStyle)
+			plotRef:GetAttributeChangedSignal("CoreTier"):Connect(applyStyle)
+		end
+	end
 
 	-- crit params (fold Bow mastery crit-damage here)
 	local function getCritParams()
@@ -447,8 +471,6 @@ function Brain.attach(hero: Model)
 		opts = opts or {}
 		local isCrit = false
 		local dealt  = amount
-		 -- Core ATK% affects all outgoing damage (basics + skills)
-    	dealt = dealt * (hero:GetAttribute("__CoreAtkMul") or 1)
 
 		-- normal crits unless disabled (this is your generic crit system)
 		if allowCrit ~= false then
@@ -867,8 +889,10 @@ function Brain.attach(hero: Model)
 	table.insert(conns, RunService.Heartbeat:Connect(function()
 		local hp  = hero:GetAttribute("ShieldHP") or 0
 		if hp > 0 then
-			local t = hero:GetAttribute("ShieldExpireAt") or 0
-			if os.clock() >= t and t > 0 then
+			local t  = hero:GetAttribute("ShieldExpireAt") or 0
+			local on = hero:GetAttribute("BarsVisible") == 1
+			-- only tick down / expire during combat bars (NOT while idling)
+			if on and t > 0 and os.clock() >= t then
 				hero:SetAttribute("ShieldHP", 0)
 				hero:SetAttribute("ShieldMax", 0)
 				hero:SetAttribute("ShieldExpireAt", 0)

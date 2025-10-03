@@ -5,7 +5,9 @@
 local Players     = game:GetService("Players")
 local RunService  = game:GetService("RunService")
 local lp          = Players.LocalPlayer
-
+-- put these near the top of the file, before refreshBuffs()
+local attachedHero, attachedPlot, attachedHum
+local bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText, BuffRow, I_OC, I_AG, I_SW
 local function primaryPart(m)
 	return m and (m.PrimaryPart or m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart"))
 end
@@ -25,19 +27,70 @@ local function myPlot()
 	end
 end
 
+local function segId(plot)
+	local w = tonumber(plot and plot:GetAttribute("CurrentWave")) or 1
+	return (w - 1) // 5
+end
+
+local function buffsActive()
+	if not (attachedPlot and attachedHero) then return false end
+	local curSeg  = segId(attachedPlot)
+	local utilSeg = tonumber(attachedPlot:GetAttribute("UtilExpiresSegId")) or -999
+	local oc      = tonumber(attachedPlot:GetAttribute("Util_OverchargePct")) or 0
+	local sw      = tonumber(attachedPlot:GetAttribute("Util_SecondWindLeft")) or 0
+	local aegSeg  = tonumber(attachedPlot:GetAttribute("Util_AegisSeg")) or -999
+	local shield  = tonumber(attachedHero:GetAttribute("ShieldHP")) or 0
+	local sameSeg = (utilSeg == curSeg)
+	local noSeg   = (utilSeg == -999)
+
+	return ((oc > 0 or sw > 0) and (sameSeg or noSeg))
+	       or (aegSeg == curSeg)
+	       or (shield > 0)
+end
+
 local function segIdFromWave(w) w = tonumber(w) or 1; return math.floor((w-1)/5) end
 
-local function refreshBuffs()
-    if not (attachedPlot and attachedHero) then BuffRow.Visible=false; return end
-    local segNow = segIdFromWave(attachedPlot:GetAttribute("CurrentWave") or 1)
-    local ocPct  = tonumber(attachedPlot:GetAttribute("Util_OverchargePct")) or 0
-    local utilSeg= tonumber(attachedPlot:GetAttribute("UtilExpiresSegId")) or -999
-    local swLeft = tonumber(attachedPlot:GetAttribute("Util_SecondWindLeft")) or 0
-    local shp    = tonumber(attachedHero:GetAttribute("ShieldHP")) or 0
+local GUI_NAME = "HeroHUD"
 
-    I_OC.Visible = (ocPct > 0) and (utilSeg == segNow)
-    I_SW.Visible = (swLeft > 0) and (utilSeg == segNow)
-    I_AG.Visible = (shp   > 0)
+local function nukeOtherBars(hero: Model, keep: Instance?)
+	if not hero then return end
+	local function sweep(container)
+		if not container then return end
+		for _, inst in ipairs(container:GetChildren()) do
+			if inst:IsA("BillboardGui") then
+				local n = inst.Name
+				-- remove any stray hero bars we might have used in older builds
+				if n == GUI_NAME or n == "HeroBarsGui" or n == "HeroBillboard" then
+					if inst ~= keep then inst:Destroy() end
+				end
+			end
+		end
+	end
+	sweep(hero)
+	local hrp = primaryPart(hero)
+	sweep(hrp)
+end
+
+local function refreshBuffs()
+    if not (BuffRow and I_OC and I_AG and I_SW) then return end
+    if not (attachedPlot and attachedHero) then
+        BuffRow.Visible = false
+        return
+    end
+
+    local segNow  = segIdFromWave(attachedPlot:GetAttribute("CurrentWave") or 1)
+    local utilSeg = tonumber(attachedPlot:GetAttribute("UtilExpiresSegId")) or -999
+    local ocPct   = tonumber(attachedPlot:GetAttribute("Util_OverchargePct")) or 0
+    local swLeft  = tonumber(attachedPlot:GetAttribute("Util_SecondWindLeft")) or 0
+    local aegSeg  = tonumber(attachedPlot:GetAttribute("Util_AegisSeg")) or -999
+    local shp     = tonumber(attachedHero:GetAttribute("ShieldHP")) or 0
+	-- If UtilExpiresSegId isn't present, still show icons whenever the buff is non-zero.
+	local sameSeg = (utilSeg == segNow)
+	local noSeg   = (utilSeg == -999)
+
+	I_OC.Visible = (ocPct > 0) and (sameSeg or noSeg)
+	I_SW.Visible = (swLeft > 0) and (sameSeg or noSeg)
+	I_AG.Visible = (shp > 0) or (aegSeg == segNow)
 
     BuffRow.Visible = (I_OC.Visible or I_SW.Visible or I_AG.Visible)
 end
@@ -70,11 +123,18 @@ local ELEMENT_ICON = {
 	Earth   = "rbxassetid://16944709510",
 	Neutral = "rbxassetid://742820149",
 }
+-- Optional pictures for the tiny buff icons (emoji fallback if blank)
+local BUFF_IMAGES = {
+    OC = "",  -- Overcharge (⚡) e.g. "rbxassetid://12345"
+    AG = "",  -- Aegis/Shield (🛡) put whatever you like
+    SW = "",  -- Second Wind (♥)
+}
 
 -- ===== UI BUILD =====
 local function buildGui()
 	local bb = Instance.new("BillboardGui")
-	bb.Name = "HeroHUD"
+	bb.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	bb.Name = GUI_NAME            -- <= single source of truth
 	bb.AlwaysOnTop = true
 	bb.Size = UDim2.fromOffset(160, 40)  -- total height: HP 16 + pad 2 + Shield 8 + pad 2
 	bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
@@ -95,31 +155,70 @@ local function buildGui()
 	-- BUFF ROW (top, tiny)
 	local BuffRow = Instance.new("Frame")
 	BuffRow.Name = "BuffRow"
-	BuffRow.Size = UDim2.new(1, 0, 0, 10)
-	BuffRow.BackgroundTransparency = 1
+	BuffRow.Size = UDim2.new(1, 0, 0, 14)      -- was 10 → a hair taller
+	BuffRow.BackgroundTransparency = 1         -- no background
 	BuffRow.Parent = root
-	BuffRow.LayoutOrder = -1 -- sit above HP bar
+	BuffRow.LayoutOrder = -1
 	local hlist = Instance.new("UIListLayout", BuffRow)
 	hlist.FillDirection = Enum.FillDirection.Horizontal
-	hlist.Padding = UDim.new(0, 2)
+	hlist.Padding = UDim.new(0, 3)             -- a bit more breathing room
 	hlist.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	hlist.VerticalAlignment   = Enum.VerticalAlignment.Center
-	local function mkI(txt)
-		local t = Instance.new("TextLabel")
-		t.Size = UDim2.fromOffset(16, 10)
-		t.BackgroundColor3 = Color3.fromRGB(36,42,64)
-		t.BackgroundTransparency = 0.25
-		t.TextColor3 = Color3.fromRGB(230,235,255)
-		t.Font = Enum.Font.GothamBold
-		t.TextScaled = true
-		t.Text = txt
-		t.Visible = false
-		t.Parent = BuffRow
-		return t
+	BuffRow.ZIndex = 5
+
+	-- one icon factory: Image + emoji text fallback, no background
+	local function mkI(emoji, key)
+		local holder = Instance.new("Frame")
+		holder.Name = "Buff_"..key
+		holder.Size = UDim2.fromOffset(14, 14) -- a smidge bigger
+		holder.BackgroundTransparency = 1
+		holder.Visible = false
+		holder.Parent = BuffRow
+		holder.ZIndex = 6                 -- <— add this
+		holder.ClipsDescendants = false   -- safety
+
+		local img = Instance.new("ImageLabel")
+		img.ZIndex = 6
+		img.Name = "Img"
+		img.BackgroundTransparency = 1
+		img.Size = UDim2.fromScale(1,1)
+		img.ScaleType = Enum.ScaleType.Fit
+		img.Parent = holder
+
+		local txt = Instance.new("TextLabel")
+		txt.ZIndex = 7
+		txt.Name = "Txt"
+		txt.BackgroundTransparency = 1
+		txt.Size = UDim2.fromScale(1,1)
+		txt.Font = Enum.Font.GothamBold
+		txt.TextScaled = true
+		txt.TextColor3 = Color3.fromRGB(230,235,255)
+		txt.Text = emoji
+		txt.Parent = holder
+
+		return holder
 	end
-	local I_OC = mkI("⚡")
-	local I_AG = mkI("🛡")
-	local I_SW = mkI("♥")
+
+	local I_OC = mkI("⚡","OC")
+	local I_AG = mkI("🛡","AG")
+	local I_SW = mkI("♥","SW")
+
+	local function applyBuffArt()
+		local map = { OC = I_OC, AG = I_AG, SW = I_SW }
+		for key, frame in pairs(map) do
+			local id  = BUFF_IMAGES[key]
+			local img = frame:FindFirstChild("Img")
+			local txt = frame:FindFirstChild("Txt")
+			if type(id) == "string" and id ~= "" then
+				img.Image = id
+				img.Visible = true
+				if txt then txt.Visible = false end
+			else
+				if img then img.Image = "" end
+				if txt then txt.Visible = true end
+			end
+		end
+	end
 
 	-- HP BAR (16 px)
 	local HPBack = Instance.new("Frame")
@@ -131,17 +230,28 @@ local function buildGui()
 	local hpCorner = Instance.new("UICorner", HPBack) hpCorner.CornerRadius = UDim.new(0, 6)
 	local hpStroke = Instance.new("UIStroke", HPBack) hpStroke.Thickness = 1 hpStroke.Color = Color3.fromRGB(0,0,0) hpStroke.Transparency = 0.35
 
-    -- icon holder (left inside HP bar) - IMAGE
-    local Icon = Instance.new("ImageLabel")
-    Icon.Name = "Icon"
-    Icon.AnchorPoint = Vector2.new(0,0.5)
-    Icon.Position = UDim2.fromOffset(3, 8)
-    Icon.Size = UDim2.fromOffset(14, 14)
-    Icon.BackgroundTransparency = 1
-    Icon.ScaleType = Enum.ScaleType.Fit
-    Icon.ZIndex = 5
-    Icon.Parent = HPBack
-    local icCorner = Instance.new("UICorner", Icon) icCorner.CornerRadius = UDim.new(1,0)
+	-- ELEMENT ICON (tiny, left inside HP bar)
+	local Icon = Instance.new("ImageLabel")
+	Icon.Name = "Icon"
+	Icon.AnchorPoint = Vector2.new(0,0.5)
+	Icon.Position = UDim2.fromOffset(3, 8)
+	Icon.Size = UDim2.fromOffset(14, 14)   -- bump to 15/16 if you want bigger
+	Icon.BackgroundTransparency = 1
+	Icon.ScaleType = Enum.ScaleType.Fit
+	Icon.ZIndex = 5
+	Icon.Parent = HPBack
+	Instance.new("UICorner", Icon).CornerRadius = UDim.new(1,0)
+
+	-- emoji fallback layered on top of the image
+	local IconText = Instance.new("TextLabel")
+	IconText.Name = "IconText"
+	IconText.BackgroundTransparency = 1
+	IconText.Size = UDim2.fromScale(1,1)
+	IconText.Font = Enum.Font.GothamBold
+	IconText.TextScaled = true
+	IconText.TextColor3 = Color3.fromRGB(255,255,255)
+	IconText.Visible = false
+	IconText.Parent = Icon
 
 	-- HP fill
 	local HPFill = Instance.new("Frame")
@@ -196,12 +306,13 @@ local function buildGui()
 	SText.Text = ""
 	SText.Parent = SBack
 
-	return bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText
+	-- at the very end of buildGui()
+	applyBuffArt()
+	return bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText, BuffRow, I_OC, I_AG, I_SW
 end
 
 -- ===== main attach/update =====
-local bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText = buildGui()
-local attachedHero, attachedPlot, attachedHum
+bb, HPBack, HPFill, HPText, Icon, SBack, SFill, SText, BuffRow, I_OC, I_AG, I_SW = buildGui()
 local lastAdornee, lastOffsetY
 local _plotBlessingConn
 
@@ -213,18 +324,30 @@ end
 
 -- blessing-driven element (from the plot only)
 local function elementFromBlessing(plot)
-	return normalizeElem(plot and plot:GetAttribute("LastElement"))
+	if not plot then return "Neutral" end
+	local curSeg = segIdFromWave(plot:GetAttribute("CurrentWave") or 1)
+	local bElem  = plot:GetAttribute("BlessingElem")
+	local bSeg   = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -999
+	if bElem and bSeg == curSeg then
+		return normalizeElem(bElem) -- Fire/Water/Earth while Blessing is active
+	end
+	return normalizeElem(plot:GetAttribute("LastElement")) -- fallback
 end
 
 local function setElementIcon(plot)
-	local e = elementFromBlessing(plot)
-	if ELEMENT_ICON[e] and ELEMENT_ICON[e] ~= "" then
-		Icon.Image = ELEMENT_ICON[e]
-	else
-		Icon.Image = "" -- no image? fall back to emoji look
-		-- quick emoji fallback: tint and show a tiny dot using a 9-slice? simplest is:
-		-- (if you want a text fallback, convert Icon back to a TextLabel; otherwise just leave image empty)
-	end
+    local e = elementFromBlessing(plot)
+    local ok = ELEMENT_ICON[e] and ELEMENT_ICON[e] ~= ""
+    local txt = Icon:FindFirstChild("IconText")
+    if ok then
+        Icon.Image = ELEMENT_ICON[e]
+        if txt then txt.Visible = false end
+    else
+        Icon.Image = ""
+        if txt then
+            txt.Text = ELEMENT_EMOJI[e] or "⬤"
+            txt.Visible = true
+        end
+    end
 end
 
 local function attach()
@@ -247,12 +370,19 @@ local function attach()
             setElementIcon(attachedPlot)
         end)
     end
+	nukeOtherBars(h, bb) -- remove any stray old bars
 	bb.Parent = h
 	bb.Adornee = pp
 	-- in attach(), after setting attachedPlot/attachedHero:
 	if attachedPlot then
-		for _,n in ipairs({"Util_OverchargePct","Util_SecondWindLeft","UtilExpiresSegId","CurrentWave"}) do
-			attachedPlot:GetAttributeChangedSignal(n):Connect(refreshBuffs)
+		for _, n in ipairs({
+			"BlessingElem","BlessingExpiresSegId","CurrentWave",
+			"Util_OverchargePct","Util_SecondWindLeft","Util_AegisSeg","UtilExpiresSegId"
+		}) do
+			attachedPlot:GetAttributeChangedSignal(n):Connect(function()
+				refreshBuffs()
+				setElementIcon(attachedPlot)
+			end)
 		end
 	end
 	if attachedHero then
@@ -269,13 +399,11 @@ local function attach()
 	setElementIcon(p)
 end
 
--- show/hide respects BarsVisible (default hidden while idle)
+-- show/hide: show while fighting OR if any buffs are active at idle
 local function updateVisibility()
 	local show = false
 	if attachedHero then
-		if attachedHero:GetAttribute("BarsVisible") == 1 then
-			show = true
-		end
+		show = (attachedHero:GetAttribute("BarsVisible") == 1) or buffsActive()
 	end
 	bb.Enabled = show
 end
