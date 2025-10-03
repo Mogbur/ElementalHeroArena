@@ -213,7 +213,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		end
 	end
 
-	-- >>> ATK core and Overcharge
+	-- >>> ATK core and Overcharge (fixed)
 	do
 		if srcPlot then
 			-- 1) Core ATK (+8% per tier)
@@ -221,16 +221,11 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				local t = tonumber(srcPlot:GetAttribute("CoreTier")) or 0
 				outDmg = outDmg * (1 + 0.08 * t)
 			end
-
-			-- 2) Overcharge: flat % damage while active in this 5-wave segment
-			local curWave   = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
-			local curSeg    = (curWave - 1) // 5
-			local activeSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -1
-			local ocPct     = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
-
-			local utilSeg = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -999
-			if ocPct > 0 and utilSeg == curSeg(srcPlot) then
-				coreC *= (1 + ocPct/100)
+			-- 2) Overcharge: segment-scoped % damage
+			local ocPct  = tonumber(srcPlot:GetAttribute("Util_OverchargePct")) or 0
+			local ocSeg  = tonumber(srcPlot:GetAttribute("UtilExpiresSegId")) or -1
+			if ocPct > 0 and ocSeg == segId(srcPlot) then
+				outDmg = outDmg * (1 + ocPct / 100)
 			end
 		end
 	end

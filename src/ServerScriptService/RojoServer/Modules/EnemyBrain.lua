@@ -4,6 +4,47 @@ local SSS   = game:GetService("ServerScriptService")
 local SMods = SSS:WaitForChild("RojoServer"):WaitForChild("Modules")
 
 local Combat = require(SMods:WaitForChild("Combat"))
+-- === per-owner hero cache (weak table) ===
+local heroCache = setmetatable({}, { __mode = "v" }) -- [ownerId] = {hero=Model, hum=Humanoid, root=BasePart, conns={...}}
+
+local function cacheValid(rec)
+	return rec and rec.hero and rec.hero.Parent and rec.hum and rec.hum.Health > 0 and rec.root
+end
+
+local function plotOfOwner(ownerId)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return end
+	for _,p in ipairs(plots:GetChildren()) do
+		if p:IsA("Model") and (p:GetAttribute("OwnerUserId") or 0) == ownerId then
+			return p
+		end
+	end
+end
+
+local function findHero(ownerId)
+	-- 1) cached
+	local rec = heroCache[ownerId]
+	if cacheValid(rec) then return rec.hero, rec.hum, rec.root end
+
+	-- 2) search only this owner's plot
+	local plot = plotOfOwner(ownerId)
+	if plot then
+		local h = plot:FindFirstChild("Hero", true)
+		if h then
+			local hum = h:FindFirstChildOfClass("Humanoid")
+			local root = h.PrimaryPart or h:FindFirstChild("HumanoidRootPart")
+			if hum and root and hum.Health > 0 then
+				-- cache & auto-invalidate
+				rec = { hero = h, hum = hum, root = root, conns = {} }
+				rec.conns[#rec.conns+1] = h.Destroying:Connect(function() heroCache[ownerId] = nil end)
+				rec.conns[#rec.conns+1] = hum.Died:Connect(function() heroCache[ownerId] = nil end)
+				heroCache[ownerId] = rec
+				return h, hum, root
+			end
+		end
+	end
+	-- (no global fallback)
+end
 
 local Brain = {}
 local ACTIVE = setmetatable({}, { __mode = "k" })
@@ -36,19 +77,6 @@ function Brain.attach(enemy: Model, ctx)
 	local COOLDOWN = 0.8
 	local lastAtk  = 0
 
-	local function isMyHero(m)
-		return m:IsA("Model") and m:GetAttribute("IsHero") and (m:GetAttribute("OwnerUserId") or 0) == OWNER
-	end
-	local function findHero()
-		for _,m in ipairs(workspace:GetDescendants()) do
-			if isMyHero(m) then
-				local h = m:FindFirstChildOfClass("Humanoid")
-				local r = m:FindFirstChild("HumanoidRootPart")
-				if h and r and h.Health > 0 then return m,h,r end
-			end
-		end
-	end
-
 	local function stopPoint(fromPos, heroPos)
 		local dir = (heroPos - fromPos); local d = dir.Magnitude
 		if d < 1e-3 then return heroPos end
@@ -67,8 +95,9 @@ function Brain.attach(enemy: Model, ctx)
 			task.wait(TICK)
 			if hum.Health <= 0 then break end
 
-			local hero, hh, hr = findHero()
+			local hero, hh, hr = findHero(OWNER)
 			if not hero then continue end
+
 
 			local dist = (hr.Position - hrp.Position).Magnitude
 			if dist > ATK_RANGE then

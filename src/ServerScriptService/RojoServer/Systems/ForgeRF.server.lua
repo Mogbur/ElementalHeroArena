@@ -1,46 +1,46 @@
 -- ServerScriptService/RojoServer/Systems/ForgeRF.server.lua
-local RS   = game:GetService("ReplicatedStorage")
-local SSS  = game:GetService("ServerScriptService")
+local RS  = game:GetService("ReplicatedStorage")
+local Remotes = RS:WaitForChild("Remotes")
+local ForgeRF = Remotes:WaitForChild("ForgeRF")
 
--- Find ForgeService module (your layout supports either spot)
-local Forge = (function()
-	local ok, mod = pcall(function() return require(SSS.RojoServer.Modules.ForgeService) end)
-	if ok and mod then return mod end
-	return require(SSS:WaitForChild("Modules"):WaitForChild("ForgeService"))
-end)()
+local SSS = game:GetService("ServerScriptService")
+-- robust require for the module under RojoServer/Modules
+local Forge = require(SSS:WaitForChild("RojoServer"):WaitForChild("Modules"):WaitForChild("ForgeService"))
 
--- Remotes folder + helpers
-local Remotes = RS:FindFirstChild("Remotes") or Instance.new("Folder", RS)
-Remotes.Name = "Remotes"
-local function ensureRE(name)
-	local r = Remotes:FindFirstChild(name)
-	if not r then r = Instance.new("RemoteEvent", Remotes); r.Name = name end
-	return r
-end
-local function ensureRF(name)
-	local r = Remotes:FindFirstChild(name)
-	if not r then r = Instance.new("RemoteFunction", Remotes); r.Name = name end
-	return r
+local function plotOf(plr)
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return nil end
+    for _, p in ipairs(plots:GetChildren()) do
+        if p:IsA("Model") and (p:GetAttribute("OwnerUserId") or 0) == plr.UserId then
+            return p
+        end
+    end
 end
 
--- Ensure the three channels used by Forge exist
-ensureRE("OpenForgeUI")
-ensureRE("ForgeHUD")
-ensureRE("CloseForgeUI")  -- optional: auto-close client UI
-local RF = ensureRF("ForgeRF")
+ForgeRF.OnServerInvoke = function(plr, cmd, wave, payload)
+    local plot = plotOf(plr)
+    if not plot then
+        if cmd == "offers" then
+            -- Still allow UI to open without a plot, but return a clear failure
+            return { core = nil, util = nil, reroll = { cost = 40, free = false } }
+        end
+        return false, "no-plot"
+    end
 
--- RF handler
-RF.OnServerInvoke = function(plr, action, ...)
-	if action == "offers" then
-		return Forge:Offers(plr, ...)
-	elseif action == "buy" then
-		-- NOTE: pass varargs to pcall by calling the function directly
-		local ok, res, why = pcall(Forge.Buy, Forge, plr, ...)
-		if not ok then
-			warn("[ForgeRF] Buy error:", res)
-			return false, "error"
-		end
-		return res, why
-	end
-	return nil
+    if cmd == "offers" then
+        -- client only sends wave; the offer uses internal per-run cache
+        return Forge:Offers(plr, wave)
+    elseif cmd == "buy" then
+        -- spam guard for purchases only
+        local now = os.clock()
+        local nextT = plr:GetAttribute("__ForgeNext") or 0
+        if now < nextT then return false, "cooldown" end
+        plr:SetAttribute("__ForgeNext", now + 0.25)
+
+        payload = payload or {}
+        payload.plot = plot -- ignore any client-supplied plot
+        return Forge:Buy(plr, wave, payload)
+    else
+        return false, "bad_cmd"
+    end
 end

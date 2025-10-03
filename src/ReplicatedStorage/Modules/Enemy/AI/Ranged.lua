@@ -9,18 +9,46 @@ local DEFAULTS = {
 	WalkSpeed=10, KeepMin=7.0, KeepMax=12.0, Cooldown=1.6,
 	ProjectileSpeed=90, ProjectileLife=3, HardMin=7.0, PinTime=2, StrafeStep=5.0, BackStepClamp=3.0,
 }
+-- === per-owner hero cache (weak) ===
+local heroCache = setmetatable({}, { __mode = "v" }) -- [ownerId] = {hero, hum, root, conns}
+
+local function cacheValid(rec)
+	return rec and rec.hero and rec.hero.Parent and rec.hum and rec.hum.Health > 0 and rec.root
+end
+
+local function plotOfOwner(ownerId)
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return end
+	for _,p in ipairs(plots:GetChildren()) do
+		if p:IsA("Model") and (p:GetAttribute("OwnerUserId") or 0) == ownerId then
+			return p
+		end
+	end
+end
+
+local function findHero(ownerId)
+	local rec = heroCache[ownerId]
+	if cacheValid(rec) then return rec.hero, rec.hum, rec.root end
+
+	local plot = plotOfOwner(ownerId)
+	if plot then
+		local h = plot:FindFirstChild("Hero", true)
+		if h then
+			local hum = h:FindFirstChildOfClass("Humanoid")
+			local root = h.PrimaryPart or h:FindFirstChild("HumanoidRootPart")
+			if hum and root and hum.Health > 0 then
+				rec = { hero = h, hum = hum, root = root, conns = {} }
+				rec.conns[#rec.conns+1] = h.Destroying:Connect(function() heroCache[ownerId] = nil end)
+				rec.conns[#rec.conns+1] = hum.Died:Connect(function() heroCache[ownerId] = nil end)
+				heroCache[ownerId] = rec
+				return h, hum, root
+			end
+		end
+	end
+end
 
 local function isMyHero(m, ownerId)
 	return m and m:IsA("Model") and m:GetAttribute("IsHero") and (m:GetAttribute("OwnerUserId") or 0) == (ownerId or 0)
-end
-local function findHero(ownerId)
-	for _, m in ipairs(workspace:GetDescendants()) do
-		if isMyHero(m, ownerId) then
-			local hum = m:FindFirstChildOfClass("Humanoid")
-			local hrp = m:FindFirstChild("HumanoidRootPart")
-			if hum and hrp and hum.Health > 0 then return m, hum, hrp end
-		end
-	end
 end
 local function unit2D(v) local u=Vector3.new(v.X,0,v.Z); if u.Magnitude<1e-4 then return Vector3.new(1,0,0) end; return u.Unit end
 
