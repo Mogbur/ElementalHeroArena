@@ -39,8 +39,19 @@ end
 --   game.ReplicatedStorage.Remotes:WaitForChild("AddStyleXP"):Fire(plr, "Bow", 5)
 local AddStyleXP = Remotes:FindFirstChild("AddStyleXP") or Instance.new("RemoteEvent", Remotes)
 AddStyleXP.Name = "AddStyleXP"
+local PlayerData = require(game.ServerScriptService.RojoServer.Data.PlayerData)
+
 AddStyleXP.OnServerEvent:Connect(function(plr, styleId: string, delta: number)
 	local key = "StyleXP_"..tostring(styleId)
 	local cur = plr:GetAttribute(key) or 0
-	plr:SetAttribute(key, math.max(0, cur + (delta or 0)))
+	local new = math.max(0, cur + (delta or 0))
+	plr:SetAttribute(key, new)
+
+	-- NEW: also persist in PlayerData.Mastery so it survives rejoin
+	local d = PlayerData.Get(plr)
+	if d and d.Mastery then
+		local map = { SwordShield = "SwordShield", Bow = "Bow", Mace = "Mace" }
+		local k = map[tostring(styleId)] or "SwordShield"
+		d.Mastery[k] = new
+	end
 end)

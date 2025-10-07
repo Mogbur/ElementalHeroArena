@@ -4,6 +4,8 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 
+-- near other requires
+local PlayerData = require(game.ServerScriptService.RojoServer.Data.PlayerData)
 local WeaponStyles = require(RS.Modules.WeaponStyles)
 local StyleMastery = require(RS.Modules.StyleMastery)
 
@@ -128,6 +130,39 @@ local function snap(plr: Player)
 		stunChance = B.stunChance or 0, stunDur = W.stunDur or 0.6,
 	}
 end
+-- === Level scaling (global) ===
+local function levelDmgMul(plr: Player)
+	local lvl = (plr and plr:GetAttribute("Level")) or 1
+	return 1 + 0.04 * math.max(0, lvl - 1)
+end
+
+-- === Style mastery helpers (global) ===
+local function styleIdFrom(plr: Player)
+	if not plr then return "SwordShield" end
+	local main = string.lower(plr:GetAttribute("WeaponMain") or "sword")
+	if main == "mace" then return "Mace"
+	elseif main == "bow" then return "Bow"
+	else return "SwordShield" end
+end
+
+local function addStyleXP(plr: Player, amount: number)
+	if not plr or (amount or 0) <= 0 then return end
+	local style = styleIdFrom(plr)
+	pcall(function() PlayerData.AddStyleXP(plr, style, amount) end)
+end
+
+-- Award only for MiniBoss / Boss kills; amounts are intentionally generous
+local function awardKillStyleXP(plr: Player, victimModel: Model)
+	if not (plr and victimModel) then return end
+	local rank = tostring(victimModel:GetAttribute("Rank") or "")
+	if rank == "" then return end
+	local wave = tonumber(victimModel:GetAttribute("Wave")) or 1
+	if rank == "MiniBoss" then
+		addStyleXP(plr, 80 + 4 * wave)     -- tweak to taste
+	elseif rank == "Boss" then
+		addStyleXP(plr, 180 + 6 * wave)    -- tweak to taste
+	end
+end
 
 local function outgoingFromStyle(attacker: Player, baseDamage: number, isBasic: boolean)
 	if not attacker then return baseDamage, {} end
@@ -230,6 +265,8 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 		end
 	end
 	-- <<< ATK core and Overcharge
+	-- === Level: outgoing damage scaling ===
+	outDmg = outDmg * levelDmgMul(sourcePlayer)
 
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then
@@ -333,6 +370,10 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 			-- ================================================
 
 			local dead = hum.Health <= 0
+			if dead then
+				-- Only award mastery on MiniBoss/Boss kills
+				awardKillStyleXP(sourcePlayer, model)
+			end
 			return dead, (afterShield > 0) and afterShield or 0
 		end
 	end

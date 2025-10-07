@@ -43,6 +43,7 @@ end)()
 local EnemyFactory = require(SMods:WaitForChild("EnemyFactory"))
 local HeroBrain    = require(SMods:WaitForChild("HeroBrain"))
 local Forge        = require(SMods:WaitForChild("ForgeService"))
+local PlayerData  = require(SSS.RojoServer.Data.PlayerData)
 
 -- near the top of PlotService (after services)
 task.spawn(function()
@@ -525,8 +526,12 @@ RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
     local allowed = {}; for _,v in ipairs(unlockedList()) do allowed[v] = true end
     if not allowed[w] then return false, "not_unlocked" end
     plot:SetAttribute("CurrentWave", w)
-    plot:SetAttribute("FullHealOnNextStart", true)
-    return true
+	plot:SetAttribute("FullHealOnNextStart", true)
+
+	-- NEW: persist progress right away on checkpoint select
+	pcall(function() PlayerData.SaveNow(plr) end)
+
+	return true
   end
   return false, "bad_verb"
 end
@@ -1322,8 +1327,8 @@ local function spawnWave(plot, portal)
 	local ownerId = plot:GetAttribute("OwnerUserId") or 0
 	local elem    = plot:GetAttribute("LastElement") or "Neutral"
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
-	local W = Waves.get(waveIdx)
-	local vols = getSpawnVolumes(plot)
+	local W       = Waves.get(waveIdx)
+	local vols    = getSpawnVolumes(plot)
 
 	-- Early-wave balance scalars (lighter at W1–W5, neutral afterward)
 	local function earlyWaveScalars(w)
@@ -1334,14 +1339,9 @@ local function spawnWave(plot, portal)
 	end
 	local hpMul, dmgMul = earlyWaveScalars(waveIdx)
 
-	local rayParams = RaycastParams.new()
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = {}
-
 	-- place & ground pin using the model's AABB (matches EnemyCommon.flushToGround)
 	local function attachAntiSink(e: Model, groundY: number)
 		if not (e and groundY) then return end
-		-- resnap next tick to catch any first-frame pose shift
 		task.defer(function()
 			if e and e.Parent then
 				pcall(function() EnemyCommon.flushToGround(e, groundY, 0.02) end)
@@ -1357,117 +1357,223 @@ local function spawnWave(plot, portal)
 		end)
 	end
 
-	-- plan: [{kind="Basic", n=#}, {kind="Runner", n=#}, ...]
-	local plan = { list = { { kind = "Basic", n = W.count } } }
-	if Waves and type(Waves.build) == "function" then
-		plan = Waves.build({ wave = waveIdx, count = W.count })
-	else
-		plan = { list = { { kind = "Basic", n = W.count } } }
+	local enemyFolder = ensureEnemyFolder(plot)
+
+	-- tiny helper to spawn one enemy at a position/part
+	local function spawnOne(kind, rankOpt, wherePartOrPos)
+		local portalPart = vols.portal or portal
+		local pos = (typeof(wherePartOrPos) == "Vector3")
+			and wherePartOrPos
+			or ((wherePartOrPos and wherePartOrPos.Position) or portal.Position)
+
+		local spawnPos, groundY = placeOnArenaGround(pos, portalPart, { plot })
+		local lookCF = lookAtArenaFrom(spawnPos, portalPart)
+
+		return EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
+			elem   = elem,
+			wave   = waveIdx,
+			rank   = rankOpt,
+			hoverY = 1.0, -- little drop-in
+		}), groundY
 	end
 
-	local enemyFolder = ensureEnemyFolder(plot)
-	local spawnIndex  = 0
+	-- ===== special waves =====
+	local isBossWave     = (waveIdx % 10 == 0)
+	local isMiniBossWave = (not isBossWave) and (waveIdx % 5 == 0)
 
+	if isBossWave then
+		-- Boss spawns SOLO (no TTL so it can't despawn mid-fight)
+		spawnOne("Basic", "Boss", (vols.boss or vols.all or portal))
+		return
+	end
+
+	if isMiniBossWave then
+		-- two minions now (eased HP/DMG), then MiniBoss 5s later
+		local pool = { "Basic", "Runner", "Archer" }
+		local k1 = pool[math.random(1,#pool)]
+		local k2 = pool[math.random(1,#pool)]
+
+		local function volFor(kind)
+			local k = string.lower(kind)
+			if (k == "archer" or k:find("ranged")) and vols.ranged then return vols.ranged end
+			if (k == "runner" or k == "basic") and vols.melee then return vols.melee end
+			return vols.all or portal
+		end
+
+		local function spawnMinion(kind)
+			local target   = volFor(kind)
+			local worldPos = target and samplePointInBox(target) or portal.Position
+			local e, gy    = spawnOne(kind, nil, worldPos)
+			if e then
+				local hum = e:FindFirstChildOfClass("Humanoid")
+				if hum then
+					hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
+					hum.Health    = hum.MaxHealth
+					local baseDmg = e:GetAttribute("BaseDamage") or 10
+					e:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
+				end
+				attachAntiSink(e, gy)
+				if ENEMY_TTL_SEC then
+					task.delay(ENEMY_TTL_SEC, function() if e and e.Parent then e:Destroy() end end)
+				end
+			end
+			return e
+		end
+
+		spawnMinion(k1)
+		spawnMinion(k2)
+
+		task.delay(5, function()
+			spawnOne("Basic", "MiniBoss", (vols.minib or vols.all or portal))
+			-- (no TTL on miniboss)
+		end)
+
+		return
+	end
+
+	-- ===== normal waves =====
+	local plan = Waves.build and Waves.build({ wave = waveIdx, count = W.count })
+	             or { list = { { kind = "Basic", n = W.count } } }
+
+	local spawnIndex = 0
 	for _, entry in ipairs(plan.list) do
-    local kind = entry.kind
-    for j = 1, entry.n do
-        spawnIndex += 1
+		local kind = entry.kind
+		for j = 1, entry.n do
+			spawnIndex += 1
 
-        -- choose miniboss every 5 waves (adjust to your taste)
-        local rank = (waveIdx % 5 == 0) and "MiniBoss" or nil
+			-- choose a volume based on enemy kind (falls back to All)
+			local targetPart = vols.all
+			local k = string.lower(tostring(kind))
+			if (k == "archer" or k:find("ranged")) and vols.ranged then
+				targetPart = vols.ranged
+			elseif (k == "runner" or k == "basic" or k == "melee") and vols.melee then
+				targetPart = vols.melee
+			end
 
-        -- Choose a volume based on enemy kind (falls back to All)
-        local targetPart = vols.all
-        local k = string.lower(tostring(kind))
-        if (k == "ranged" or k:find("ranged")) and vols.ranged then
-            targetPart = vols.ranged
-        elseif (k == "melee" or k == "runner" or k == "basic") and vols.melee then
-            targetPart = vols.melee
-        end
+			local worldPos
+			if targetPart then
+				-- Band along local Z: melee→front, ranged→back, all→anywhere
+				local z0, z1 = -0.5, 0.5
+				if targetPart == vols.ranged then
+					z0, z1 = -0.5, -0.10
+				elseif targetPart == vols.melee then
+					z0, z1 =  0.00,  0.50
+				end
+				worldPos = samplePointInBox(targetPart, z0, z1)
+			end
 
-        -- Boss/miniboss fixed points override
-        local fixed = (rank == "Boss" and vols.boss) or (rank == "MiniBoss" and vols.minib)
+			-- Fallback: old scatter if no volumes existed
+			if not worldPos then
+				local fwd = portal.CFrame.LookVector
+				local lateral = math.random(-6, 6)
+				worldPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 0, 0)
+			end
 
-        local worldPos
-        if fixed then
-            worldPos = fixed.Position
-        elseif targetPart then
-            -- Band along local Z: melee→front, ranged→back, all→anywhere
-            local z0, z1 = -0.5, 0.5
-            if targetPart == vols.ranged then
-                z0, z1 = -0.5, -0.10
-            elseif targetPart == vols.melee then
-                z0, z1 =  0.00,  0.50
-            end
-            worldPos = samplePointInBox(targetPart, z0, z1)
-        end
+			-- place + face toward portal (or portal anchor fallback)
+			local portalPart = vols.portal or portal
+			local spawnPos, groundY = placeOnArenaGround(worldPos, portalPart, { plot })
+			local lookCF = lookAtArenaFrom(spawnPos, portalPart)
 
-        -- Fallback: old scatter if no volumes existed
-        if not worldPos then
-            local fwd = portal.CFrame.LookVector
-            local lateral = math.random(-6, 6)
-            worldPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 0, 0)
-        end
+			-- spawn
+			local enemy = EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
+				elem   = elem,
+				wave   = waveIdx,
+				hoverY = 1.0, -- visible drop-in
+			})
 
-        -- place + face toward portal (or portal anchor fallback)
-        local portalPart = vols.portal or portal
-        local spawnPos, groundY = placeOnArenaGround(worldPos, portalPart, { plot })
-        local lookCF = lookAtArenaFrom(spawnPos, portalPart)
+			if enemy then
+				enemy:SetAttribute("Wave", waveIdx)
 
-        -- spawn
-        local enemy = EnemyFactory.spawn(kind, ownerId, lookCF, groundY, enemyFolder, {
-            elem = elem,
-            rank = rank,
-            wave = waveIdx,
-			hoverY = 1.0, -- <- spawns a little above ground so they visibly “drop”
-        })
+				for _, bp in ipairs(enemy:GetDescendants()) do
+					if bp:IsA("BasePart") then
+						bp.Anchored = false
+						bp.CanCollide = (bp == enemy.PrimaryPart) -- HRP only
+						bp.AssemblyLinearVelocity  = Vector3.zero
+						bp.AssemblyAngularVelocity = Vector3.zero
+						bp.CollisionGroup = "Enemy"
+						bp.CanTouch = false
+					end
+				end
 
-        if enemy then
-            for _, bp in ipairs(enemy:GetDescendants()) do
-                if bp:IsA("BasePart") then
-                    bp.Anchored = false
-                    bp.CanCollide = (bp == enemy.PrimaryPart) -- HRP only
-                    bp.AssemblyLinearVelocity  = Vector3.zero
-                    bp.AssemblyAngularVelocity = Vector3.zero
-                    bp.CollisionGroup = "Enemy"
-                    bp.CanTouch = false
-                end
-            end
+				local hum = enemy:FindFirstChildOfClass("Humanoid")
+				if hum then
+					hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
+					hum.Health    = hum.MaxHealth
+					local baseDmg = enemy:GetAttribute("BaseDamage") or 10
+					enemy:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
+				end
 
-            local hum = enemy:FindFirstChildOfClass("Humanoid")
-            if hum then
-                hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul))
-                hum.Health    = hum.MaxHealth
-                local baseDmg = enemy:GetAttribute("BaseDamage") or 10
-                enemy:SetAttribute("BaseDamage", math.max(1, math.floor(baseDmg * dmgMul)))
-            end
+				if not CollectionService:HasTag(enemy, "Enemy") then
+					CollectionService:AddTag(enemy, "Enemy")
+				end
 
-            if not CollectionService:HasTag(enemy, "Enemy") then
-                CollectionService:AddTag(enemy, "Enemy")
-            end
+				attachAntiSink(enemy, groundY)
 
-            attachAntiSink(enemy, groundY)
-
-            task.delay(ENEMY_TTL_SEC, function()
-                if enemy and enemy.Parent then enemy:Destroy() end
-            end)
-        end
-    end
+				task.delay(ENEMY_TTL_SEC, function()
+					if enemy and enemy.Parent then enemy:Destroy() end
+				end)
+			end
+		end
+	end
 end
-end
+
 
 local function rewardAndAdvance(plot, clearedWave)
 	local W = Waves.get(clearedWave)
 	local plr = plotToPlayer[plot]
+
+	-- rewards
 	if plr and plr:FindFirstChild("leaderstats") and plr.leaderstats:FindFirstChild("Money") then
 		plr.leaderstats.Money.Value += W.rewardMoney
 	end
 	plot:SetAttribute("Seeds", (plot:GetAttribute("Seeds") or 0) + W.rewardSeeds)
 
-	-- progress
+	-- progress wave
 	plot:SetAttribute("CurrentWave", clearedWave + 1)
 	local maxC = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
 	if clearedWave > maxC then plot:SetAttribute("MaxClearedWave", clearedWave) end
+
+	-- === NEW: give player account XP on wave clear ===
+	if plr then
+		-- tiny, safe curve; tune later
+		local xp = 15 + 2 * (clearedWave or 1)
+		pcall(function() PlayerData.AddXP(plr, xp) end)
+	end
+	-- === Mastery: wave-clear only (no per-hit / no normal kill) ===
+	do
+		if plr then
+			-- Use the current hero/weapon to choose which style gets XP
+			local hero = getHero(plot)
+			local main = string.lower((hero and hero:GetAttribute("WeaponMain")) or (plr:GetAttribute("WeaponMain") or "sword"))
+			local style = (main=="mace" and "Mace") or (main=="bow" and "Bow") or "SwordShield"
+
+			-- Generous curve; adjust to your economy
+			local mxp = 30 + 3 * (clearedWave or 1)
+
+			pcall(function() PlayerData.AddStyleXP(plr, style, mxp) end)
+		end
+	end
+
+	-- === NEW: segment rollover housekeeping (prevents OC/SW/Bless from bleeding) ===
+	do
+		local w   = tonumber(plot:GetAttribute("CurrentWave")) or 1
+		local seg = ((w - 1) // 5)
+
+		-- Overcharge + Second Wind share UtilExpiresSegId
+		local utilSeg = tonumber(plot:GetAttribute("UtilExpiresSegId")) or -1
+		if utilSeg ~= seg then
+			plot:SetAttribute("Util_OverchargePct", 0)
+			plot:SetAttribute("Util_SecondWindLeft", 0)
+			plot:SetAttribute("UtilExpiresSegId", seg)
+		end
+
+		-- Blessing
+		local blessSeg = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -1
+		if blessSeg ~= seg then
+			plot:SetAttribute("BlessingElem", nil)
+			plot:SetAttribute("BlessingExpiresSegId", seg)
+		end
+	end
 end
 
 local function cleanupLeftovers(plot)

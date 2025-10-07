@@ -92,7 +92,11 @@ function EnemyFactory.spawn(kind, ownerUserId, lookCF, groundY, parentFolder, op
 
 	Common.colorByElement(m, opts.elem)
 
-	local hover = (opts.attributes and tonumber(opts.attributes.hoverY)) or 0
+	local hover = tonumber(opts.hoverY)
+	if hover == nil and opts.attributes then
+		hover = tonumber(opts.attributes.hoverY)
+	end
+	hover = hover or 0
 	Common.flushToGround(m, groundY + hover, 0.02)  -- AABB-based snap
 	resnapNextTick(m, groundY + hover)
 	Common.ownToServer(m)
@@ -112,6 +116,49 @@ function EnemyFactory.spawn(kind, ownerUserId, lookCF, groundY, parentFolder, op
 	local dmg0 = tonumber(base.dmg) or (tonumber(m:GetAttribute("BaseDamage")) or 10)
 	local dmul = (tonumber(growth.dmg) or 1.0) ^ (wave-1)
 	m:SetAttribute("BaseDamage", math.max(1, math.floor(dmg0 * dmul)))
+
+	-- RANK MULTIPLIERS (MiniBoss / Boss)
+	do
+		local rank = tostring(m:GetAttribute("Rank") or "")
+		if rank ~= "" then
+			-- tune to taste; these feel good with your early curve
+			local hpMul, dmgMul
+			if rank == "MiniBoss" then
+				hpMul, dmgMul = 5.0, 1.6
+			elseif rank == "Boss" then
+				hpMul, dmgMul = 11.0, 2.3
+			else
+				hpMul, dmgMul = 1.0, 1.0
+			end
+
+			if hum then
+				hum.MaxHealth = math.max(1, math.floor(hum.MaxHealth * hpMul + 0.5))
+				hum.Health    = hum.MaxHealth
+			end
+
+			local bd = tonumber(m:GetAttribute("BaseDamage")) or 10
+			m:SetAttribute("BaseDamage", math.max(1, math.floor(bd * dmgMul + 0.5)))
+		end
+	end
+	-- after rank multipliers finished adjusting HP/Damage:
+	do
+		local rank = tostring(m:GetAttribute("Rank") or "")
+		local hum  = m:FindFirstChildOfClass("Humanoid")
+
+		-- hide Roblox’s default overheads so we can draw our own
+		if hum then
+			pcall(function()
+				hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			end)
+		end
+
+		-- tell the client what HUD to draw (MiniBoss -> hero-style bar; Boss -> future big bar)
+		if rank == "MiniBoss" then
+			m:SetAttribute("SpecialHUD", "MiniBoss")
+		elseif rank == "Boss" then
+			m:SetAttribute("SpecialHUD", "Boss")
+		end
+	end
 
 	local hrp = m:FindFirstChild("HumanoidRootPart")
 	if hrp then hrp.CanCollide = true; hrp.Massless = false end

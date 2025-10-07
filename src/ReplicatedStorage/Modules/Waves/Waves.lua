@@ -22,4 +22,19 @@ function Waves.get(waveIndex: number)
   }
 end
 
+-- hook up Composer if present
+local Composer
+pcall(function()
+    Composer = require(script.Parent:FindFirstChild("Composer"))
+end)
+
+function Waves.build(args)
+    if Composer and type(Composer.build) == "function" then
+        return Composer.build(args)
+    else
+        local count = (args and args.count) or 3
+        return { list = { {kind="Basic", n=count} } }
+    end
+end
+
 return Waves
