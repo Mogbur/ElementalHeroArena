@@ -117,6 +117,17 @@ local function ensureMiniBossBar(enemy: Instance)
         local sfrac = math.clamp(sh / mx, 0, 1)
         SFill.Size = UDim2.fromScale(sfrac, 1)
         SBack.Visible = (sh > 0)
+        -- keep the bar pinned nicely even if the rig's height changes
+        local oy = offsetYFor(enemy)
+        if math.abs(bb.StudsOffsetWorldSpace.Y - oy) > 0.05 then
+            bb.StudsOffsetWorldSpace = Vector3.new(0, oy, 0)
+        end
+
+        -- if the model swapped its primary/HRP, reattach the adornee
+        local cur = modelPrimaryPart(enemy)
+        if cur and bb.Adornee ~= cur then
+            bb.Adornee = cur
+        end
     end)
 
     enemy.AncestryChanged:Connect(function(_, parent)

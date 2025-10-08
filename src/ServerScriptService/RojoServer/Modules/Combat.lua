@@ -267,7 +267,24 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- <<< ATK core and Overcharge
 	-- === Level: outgoing damage scaling ===
 	outDmg = outDmg * levelDmgMul(sourcePlayer)
+	-- === Global crits (respects plot/player CritChance & CritMult) ===
+	local didCrit = false
+	do
+		local cc, cm = 0, 2.0
+		if srcPlot then
+			cc = tonumber(srcPlot:GetAttribute("CritChance")) or 0
+			cm = tonumber(srcPlot:GetAttribute("CritMult"))  or 2.0
+		elseif sourcePlayer then
+			cc = tonumber(sourcePlayer:GetAttribute("CritChance")) or 0
+			cm = tonumber(sourcePlayer:GetAttribute("CritMult"))  or 2.0
+		end
 
+		-- Bow’s forced crit cadence is handled separately; this is the general crit system.
+		if cc > 0 and math.random() < cc then
+			didCrit = true
+			outDmg = math.floor(outDmg * cm + 0.5)
+		end
+	end
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then
 		-- hard mute during landing / guard
@@ -371,7 +388,52 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 			local dead = hum.Health <= 0
 			if dead then
-				-- Only award mastery on MiniBoss/Boss kills
+				-- Only MiniBoss/Boss drop Essence; chance scales by wave bracket
+				local rank = tostring(model:GetAttribute("Rank") or "")
+				if rank ~= "" and sourcePlayer then
+					-- Choose element: Blessing (if active this segment) > LastElement > random F/W/E
+					local function validElem(e) return e == "Fire" or e == "Water" or e == "Earth" end
+					local elem
+					if srcPlot then
+						local w   = tonumber(srcPlot:GetAttribute("CurrentWave")) or 1
+						local seg = (w - 1) // 5
+						local bEl = srcPlot:GetAttribute("BlessingElem")
+						local bOk = (bEl and (tonumber(srcPlot:GetAttribute("BlessingExpiresSegId")) or -1) == seg and validElem(bEl))
+						if bOk then
+						elem = tostring(bEl)
+						else
+						local last = tostring(srcPlot:GetAttribute("LastElement"))
+						if validElem(last) then elem = last end
+						end
+					end
+					if not elem then
+						local pool = {"Fire","Water","Earth"}
+						elem = pool[math.random(1,#pool)]
+					end
+
+					-- Wave-scaled chance p: 1–9:15%, 10–19:25%, 20–29:40%, 30+:60%
+					local wave = tonumber(model:GetAttribute("Wave")) or 1
+					local function chanceFor(w)
+						if w >= 30 then return 0.60
+						elseif w >= 20 then return 0.40
+						elseif w >= 10 then return 0.25
+						else return 0.15 end
+					end
+					local p = chanceFor(wave)
+
+					local give = 0
+					if rank == "MiniBoss" then
+						if math.random() < p then give = 1 end
+					elseif rank == "Boss" then
+						give = 1
+						if math.random() < p then give += 1 end
+					end
+
+					if give > 0 then
+						pcall(function() PlayerData.AddEssence(sourcePlayer, elem, give) end)
+					end
+				end
+				-- keep your existing style XP award
 				awardKillStyleXP(sourcePlayer, model)
 			end
 			return dead, (afterShield > 0) and afterShield or 0

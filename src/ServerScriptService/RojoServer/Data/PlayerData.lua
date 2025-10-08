@@ -9,6 +9,7 @@ local DEFAULT = {
   Mastery = { SwordShield=0, Bow=0, Mace=0 },
   OwnedStyles = {},
   WeaponMain = "Sword", WeaponOff = "Shield",
+  Essence = { Fire = 0, Water = 0, Earth = 0 },
 }
 
 local Sessions = {}
@@ -44,6 +45,9 @@ local function mirrorToLeaderstats(plr, d)
   plr:SetAttribute("WeaponMain", d.WeaponMain or "Sword")
   plr:SetAttribute("WeaponOff",  d.WeaponOff  or "Shield")
   plr:SetAttribute("Level",      d.Level or 1)
+  plr:SetAttribute("Essence_Fire",   (d.Essence and d.Essence.Fire)   or 0)
+  plr:SetAttribute("Essence_Water",  (d.Essence and d.Essence.Water)  or 0)
+  plr:SetAttribute("Essence_Earth",  (d.Essence and d.Essence.Earth)  or 0)
 end
 
 Players.PlayerAdded:Connect(function(plr)
@@ -85,6 +89,31 @@ function M.AddStyleXP(plr, styleId, delta)
   styleId = ({SwordShield=true,Bow=true,Mace=true})[styleId] and styleId or "SwordShield"
   d.Mastery[styleId] = math.max(0, (d.Mastery[styleId] or 0) + (tonumber(delta) or 0))
   mirrorToLeaderstats(plr, d)
+end
+
+local function canonElem(s)
+  s = tostring(s or "Water")
+  if s == "Fire" or s == "Water" or s == "Earth" then return s end
+  return "Water"
+end
+
+function M.AddEssence(plr, elem, amount)
+  local d = ensureSession(plr)
+  elem = canonElem(elem)
+  d.Essence = d.Essence or {Fire=0,Water=0,Earth=0}
+  d.Essence[elem] = math.max(0, (d.Essence[elem] or 0) + math.floor(amount or 0))
+  mirrorToLeaderstats(plr, d)
+end
+
+function M.SpendEssence(plr, elem, amount)
+  local d = ensureSession(plr)
+  elem = canonElem(elem)
+  amount = math.max(0, math.floor(amount or 0))
+  local pool = d.Essence or {Fire=0,Water=0,Earth=0}
+  if (pool[elem] or 0) < amount then return false end
+  pool[elem] = pool[elem] - amount
+  mirrorToLeaderstats(plr, d)
+  return true
 end
 
 return M

@@ -1521,6 +1521,17 @@ end
 local function rewardAndAdvance(plot, clearedWave)
 	local W = Waves.get(clearedWave)
 	local plr = plotToPlayer[plot]
+	-- Chest every 20 waves: award 2–3 Essence of a random element (Fire/Water/Earth)
+	if (clearedWave % 20) == 0 then
+		local plr = plotToPlayer[plot]
+		if plr then
+			local pool = {"Fire","Water","Earth"}
+			local elem = pool[math.random(1,#pool)]
+			local amt  = 2 + math.random(0,1) -- 2 or 3
+			pcall(function() PlayerData.AddEssence(plr, elem, amt) end)
+		end
+	end
+
 
 	-- rewards
 	if plr and plr:FindFirstChild("leaderstats") and plr.leaderstats:FindFirstChild("Money") then
@@ -1736,7 +1747,11 @@ local function runFightLoop(plot, portal, owner, opts)
 
 		local startWave = plot:GetAttribute("CurrentWave") or 1
 		local t0 = time()
-		while enemiesAliveForPlot(plot) > 0 and (time() - t0) < ENEMY_TTL_SEC do
+		-- special waves get longer time caps
+		local isBoss     = (startWave % 10 == 0)
+		local isMiniBoss = (not isBoss) and (startWave % 5 == 0)
+		local waveTimeCap = (isBoss and 180) or (isMiniBoss and 120) or ENEMY_TTL_SEC
+		while enemiesAliveForPlot(plot) > 0 and (time() - t0) < waveTimeCap do
 			if hum and hum.Health <= 0 then
 				-- === Second Wind (segment-limited, +1 life) ===
 				do
