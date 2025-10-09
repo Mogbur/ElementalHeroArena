@@ -4,6 +4,9 @@
 
 local Players  = game:GetService("Players")
 local RS       = game:GetService("ReplicatedStorage")
+local SSS        = game:GetService("ServerScriptService")
+local PlayerData = require(SSS.RojoServer.Data.PlayerData)
+local Tuning     = require(RS.Modules.SkillTuning)
 
 local Remotes  = RS:WaitForChild("Remotes")
 local RE_Buy   = Remotes:WaitForChild("SkillPurchaseRequest")
@@ -76,10 +79,16 @@ local function heroFor(plr : Player)
 	end
 end
 
-local function costFor(skillId, nextLevel)
-	local cfg = CFG[skillId]
-	if not cfg then return 25 end
-	return math.floor((cfg.baseCost or 25) * ((cfg.costMul or 1.35) ^ (nextLevel - 1)))
+local function essenceCostFor(skillId, nextLevel)
+    -- returns fluxCost:number, essTbl:{[Elem]=amt}
+    local entry = (Tuning.Costs and Tuning.Costs[skillId] and Tuning.Costs[skillId][nextLevel]) or {}
+    local flux = tonumber(entry.flux) or 0
+    local ess  = {}
+    local src  = entry.essence or entry.ess
+    if type(src) == "table" then
+        for k,v in pairs(src) do ess[k] = math.max(0, math.floor(tonumber(v) or 0)) end
+    end
+    return flux, ess
 end
 
 -- Write BOTH canonical and legacy attribute names (so any UI reads it).
@@ -94,23 +103,40 @@ end
 
 -- ===================== Buy / Upgrade =====================
 RE_Buy.OnServerEvent:Connect(function(plr : Player, rawId)
-	local id = norm(rawId)
-	if not (id and CANON[id]) then return end
+    local id = norm(rawId)
+    if not (id and CANON[id]) then return end
 
-	local cur = tonumber(plr:GetAttribute(lvlAttr(id))) or 0
-	if cur >= MAX_LEVEL then return end
+    local cur = tonumber(plr:GetAttribute(lvlAttr(id))) or 0
+    if cur >= MAX_LEVEL then return end
 
-	local nextLevel = cur + 1
-	local price = costFor(id, nextLevel)
+    local nextLevel = cur + 1
+    local fluxCost, ess = essenceCostFor(id, nextLevel)
 
-	local M = getMoney(plr)
-	if not (M and M.Value >= price) then return end
+    -- 1) Spend Flux (optional – will be 0 with your current Costs)
+    if fluxCost > 0 and not PlayerData.SpendFlux(plr, fluxCost) then
+        return -- not enough flux
+    end
 
-	M.Value -= price
-	setLevelAttrs(plr, id, nextLevel)
+    -- 2) Spend Essence (all-or-nothing)
+    local spent = {}
+    for elem, amt in pairs(ess) do
+        if amt > 0 then
+            if not PlayerData.SpendEssence(plr, elem, amt) then
+                -- refund any Flux we took
+                if fluxCost > 0 then PlayerData.AddFlux(plr, fluxCost) end
+                -- refund any partial Essence (shouldn’t happen due to early bail, but safe)
+                for e,a in pairs(spent) do PlayerData.AddEssence(plr, e, a) end
+                return
+            end
+            spent[elem] = amt
+        end
+    end
 
-	local hero = heroFor(plr)
-	if hero then setLevelAttrs(hero, id, nextLevel) end
+    -- 3) Apply level
+    setLevelAttrs(plr, id, nextLevel)
+    local hero = heroFor(plr)
+    if hero then setLevelAttrs(hero, id, nextLevel) end
+    pcall(function() require(SSS.RojoServer.Data.PlayerData).SaveNow(plr) end)
 end)
 
 -- ===================== Equip =====================

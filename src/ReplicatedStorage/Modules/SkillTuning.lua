@@ -80,4 +80,31 @@ return {
 	Stat = Stat,
 	-- NEW: blessings exported here
 	BLESS = BLESS,
+	-- Add after BLESS=BLESS, Stat=Stat, etc.
+	Costs = {
+		firebolt = {
+			[1] = { essence = { Fire  = 1 } },
+			[2] = { essence = { Fire  = 2 } },
+			[3] = { essence = { Fire  = 4 } },
+			[4] = { essence = { Fire  = 7 } },
+			[5] = { essence = { Fire  = 11 } },
+		},
+		aquabarrier = {
+			[1] = { essence = { Water = 1 } },
+			[2] = { essence = { Water = 2 } },
+			[3] = { essence = { Water = 4 } },
+			[4] = { essence = { Water = 7 } },
+			[5] = { essence = { Water = 11 } },
+		},
+		quakepulse = {
+			[1] = { essence = { Earth = 1 } },
+			[2] = { essence = { Earth = 2 } },
+			[3] = { essence = { Earth = 4 } },
+			[4] = { essence = { Earth = 7 } },
+			[5] = { essence = { Earth = 11 } },
+		},
+	},
+	-- Optional: you can include a flux field if you ever want to charge it too:
+	-- e.g. [3] = { flux = 50, essence = { Fire = 4 } }
+
 }

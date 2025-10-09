@@ -4,7 +4,7 @@ local Players = game:GetService("Players")
 local store = DSS:GetDataStore("EHA_Player_v1")
 
 local DEFAULT = {
-  Money = 0, Level = 1, XP = 0,
+  Money = 0, Flux = 0, Level = 1, XP = 0,
   Core = { id="ATK", tier=0 },
   Mastery = { SwordShield=0, Bow=0, Mace=0 },
   OwnedStyles = {},
@@ -14,19 +14,38 @@ local DEFAULT = {
 
 local Sessions = {}
 
+-- add once, near DEFAULT
+local function deepMerge(dst, src)
+  for k,v in pairs(src) do
+    if type(v) == "table" then
+      dst[k] = type(dst[k]) == "table" and dst[k] or {}
+      deepMerge(dst[k], v)
+    elseif dst[k] == nil then
+      dst[k] = v
+    end
+  end
+  return dst
+end
+
 local function loadAsync(uid)
   local ok, data = pcall(function() return store:GetAsync(("u:%d"):format(uid)) end)
   if ok and data then return data end
 end
 
 local function saveAsync(uid, data)
-  pcall(function() store:SetAsync(("u:%d"):format(uid), data) end)
+  pcall(function()
+    store:UpdateAsync(("u:%d"):format(uid), function(old)
+      old = type(old)=="table" and old or {}
+      return data
+    end)
+  end)
 end
 
 local function ensureSession(plr)
   local d = Sessions[plr]
   if d then return d end
-  d = loadAsync(plr.UserId) or table.clone(DEFAULT)
+  d = loadAsync(plr.UserId) or {}
+  deepMerge(d, DEFAULT)             -- ← fills missing keys (Flux, Essence table, etc.)
   Sessions[plr] = d
   return d
 end
@@ -45,6 +64,7 @@ local function mirrorToLeaderstats(plr, d)
   plr:SetAttribute("WeaponMain", d.WeaponMain or "Sword")
   plr:SetAttribute("WeaponOff",  d.WeaponOff  or "Shield")
   plr:SetAttribute("Level",      d.Level or 1)
+  plr:SetAttribute("Flux",       d.Flux or 0)
   plr:SetAttribute("Essence_Fire",   (d.Essence and d.Essence.Fire)   or 0)
   plr:SetAttribute("Essence_Water",  (d.Essence and d.Essence.Water)  or 0)
   plr:SetAttribute("Essence_Earth",  (d.Essence and d.Essence.Earth)  or 0)
@@ -116,4 +136,18 @@ function M.SpendEssence(plr, elem, amount)
   return true
 end
 
+function M.AddFlux(plr, amt)
+  local d = ensureSession(plr)
+  d.Flux = math.max(0, (d.Flux or 0) + math.floor(tonumber(amt) or 0))
+  mirrorToLeaderstats(plr, d)
+end
+
+function M.SpendFlux(plr, amt)
+  local d = ensureSession(plr)
+  amt = math.max(0, math.floor(tonumber(amt) or 0))
+  if (d.Flux or 0) < amt then return false end
+  d.Flux -= amt
+  mirrorToLeaderstats(plr, d)
+  return true
+end
 return M

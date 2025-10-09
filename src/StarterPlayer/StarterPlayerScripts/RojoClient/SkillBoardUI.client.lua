@@ -14,6 +14,15 @@ local RE_Buy   = Remotes:WaitForChild("SkillPurchaseRequest")
 
 -- ---------- skill data ----------
 local SkillConfig = require(RS.Modules.SkillConfig)
+local SkillTuning = require(RS.Modules.SkillTuning)
+
+local function nextCost(skillId, curLv)
+    local nextLv = math.clamp((curLv or 0) + 1, 1, (SkillTuning.MAX_LEVEL or 5))
+    local c = (SkillTuning.Costs and SkillTuning.Costs[skillId] and SkillTuning.Costs[skillId][nextLv]) or {}
+    local flux = tonumber(c.flux) or 0
+    local ess  = c.essence or c.ess or {}
+    return flux, ess, nextLv
+end
 
 local SKILLS = { "firebolt","aquabarrier","quakepulse" }
 
@@ -593,6 +602,69 @@ local function buildTextGui(textPart)
 	perkLbl.TextColor3 = Color3.fromRGB(235,235,235)
 	perkLbl.Text = ""
 	perkLbl.Parent = root
+	-- === Cost row (small chips) ===
+	local costRow = Instance.new("Frame")
+	costRow.Name = "CostRow"
+	costRow.BackgroundTransparency = 1
+	costRow.AnchorPoint = Vector2.new(0.5, 0)
+	costRow.Position = UDim2.fromScale(0.5, 0.68)
+	costRow.Size = UDim2.fromScale(0.92, 0.12)
+	costRow.Parent = root -- or your text root frame
+
+	local list = Instance.new("UIListLayout", costRow)
+	list.FillDirection = Enum.FillDirection.Horizontal
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.VerticalAlignment = Enum.VerticalAlignment.Center
+	list.Padding = UDim.new(0, 6)
+
+	local function mkChip(imgId, txt)
+		local chip = Instance.new("Frame")
+		chip.BackgroundTransparency = 0.35
+		chip.BackgroundColor3 = Color3.fromRGB(20,20,20)
+		chip.Size = UDim2.fromOffset(120, 28)
+		chip.Parent = costRow
+		local corner = Instance.new("UICorner", chip); corner.CornerRadius = UDim.new(0, 8)
+		local stroke = Instance.new("UIStroke", chip); stroke.Thickness = 2; stroke.Color = Color3.fromRGB(0,0,0)
+
+		local icon = Instance.new("ImageLabel")
+		icon.BackgroundTransparency = 1
+		icon.Size = UDim2.fromOffset(22,22)
+		icon.Position = UDim2.new(0, 6, 0.5, 0)
+		icon.AnchorPoint = Vector2.new(0,0.5)
+		icon.Image = imgId
+		icon.Parent = chip
+
+		local label = Instance.new("TextLabel")
+		label.BackgroundTransparency = 1
+		label.TextScaled = true
+		label.Font = Enum.Font.GothamBold
+		label.TextColor3 = Color3.new(1,1,1)
+		label.Text = txt
+		label.Position = UDim2.new(0, 34, 0, 0)
+		label.Size = UDim2.new(1, -40, 1, 0)
+		label.Parent = chip
+		return chip, label
+	end
+
+	-- “slots” we can reuse on refresh
+	local chipFlux, fluxLabel = mkChip("rbxassetid://<your_flux_icon>", "0")
+	local chipFire, fireLabel = mkChip("rbxassetid://<fire_icon>", "0")
+	local chipWater,waterLabel= mkChip("rbxassetid://<water_icon>", "0")
+	local chipEarth,earthLabel= mkChip("rbxassetid://<earth_icon>", "0")
+
+	local function refreshCostRow(skillId)
+		local lv = tonumber(lp:GetAttribute("Skill_"..skillId)) or 0
+		local flux, ess = nextCost(skillId, lv)
+		chipFlux.Visible  = (flux > 0)
+		fluxLabel.Text    = "x"..tostring(flux)
+
+		local f = tonumber(ess.Fire or 0)
+		local w = tonumber(ess.Water or 0)
+		local e = tonumber(ess.Earth or 0)
+		chipFire.Visible  = f > 0;  fireLabel.Text  = "x"..f
+		chipWater.Visible = w > 0;  waterLabel.Text = "x"..w
+		chipEarth.Visible = e > 0;  earthLabel.Text = "x"..e
+	end
 
 	-- hold-to-upgrade
 	local upgrade = Instance.new("TextButton")
