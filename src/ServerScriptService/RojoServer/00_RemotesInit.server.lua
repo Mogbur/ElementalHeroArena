@@ -19,6 +19,7 @@ ensure("SkillEquipRequest")
 ensure("WaveText")
 ensure("CheckpointRF",   "RemoteFunction")
 ensure("OpenCheckpointUI","RemoteEvent")
+ensure("LootPickupSFX")  -- add alongside your other core remotes
 -- (WaveBanner is gone, do not recreate)
 
 -- Skills/VFX

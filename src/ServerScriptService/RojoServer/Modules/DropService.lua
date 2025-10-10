@@ -1,158 +1,164 @@
--- ServerScriptService/DropService.lua
--- Spawns loot orbs that home to a Player's Character (HRP), not the Hero model.
--- Awards Flux and/or Essence on pickup.
+-- Owner-only loot orbs that home to the Player's *Character* (HRP) — not the Hero.
+-- Private audio: server fires a client-only SFX event to the owner on pickup.
 
-local Players        = game:GetService("Players")
-local TweenService   = game:GetService("TweenService")
-local Debris         = game:GetService("Debris")
-local RS             = game:GetService("ReplicatedStorage")
-local SSS            = game:GetService("ServerScriptService")
+local Players      = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local Debris       = game:GetService("Debris")
+local RS           = game:GetService("ReplicatedStorage")
+local SSS          = game:GetService("ServerScriptService")
 
-local PlayerData     = require(SSS.RojoServer.Data.PlayerData)
+local Remotes      = RS:WaitForChild("Remotes")
+local RE_LootSFX   = Remotes:WaitForChild("LootPickupSFX") -- add in RemotesInit (section 2)
+
+local PlayerData   = require(SSS.RojoServer.Data.PlayerData)
 
 local DropService = {}
 
--- Optional: small ping sound (server-side so everyone hears it lightly)
-local PICKUP_SOUND_ID = "rbxassetid://13189443030" -- swap if you have a different one
-
--- Colors for element orbs
 local ELEM_COLORS = {
-	Fire  = Color3.fromRGB(255,140,80),
-	Water = Color3.fromRGB(90,180,255),
-	Earth = Color3.fromRGB(200,175,120),
-	Flux  = Color3.fromRGB(240,240,80),
+	Fire  = Color3.fromRGB(255,70, 60),
+	Water = Color3.fromRGB( 80,160,255),
+	Earth = Color3.fromRGB(90,200,120),
+	Flux  = Color3.fromRGB(170,90, 255),
 }
+-- === FX tuning ===
+local HOVER_TIME      = 0.5   -- float before homing
+local HOMING_SPEED    = 48    -- studs/sec
+local TIMEOUT_SECONDS = 60    -- how long to chase owner
 
--- Make a simple neon sphere “orb”
-local function makeOrb(pos : Vector3, color : Color3)
+-- Trail look
+local TRAIL_LIFETIME  = 0.6
+local TRAIL_WIDTH     = 0.55
+
+local function hrpOfPlayer(plr)
+	local char = plr and plr.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function makeOrb(pos, color, ownerUserId)
 	local p = Instance.new("Part")
+	p.Name = "LootOrb"
 	p.Shape = Enum.PartType.Ball
 	p.Material = Enum.Material.Neon
 	p.Color = color
-	p.Size = Vector3.new(0.8, 0.8, 0.8)
+	p.Size = Vector3.new(0.8,0.8,0.8)
 	p.Anchored = true
-	p.CanQuery = false
 	p.CanCollide = false
+	p.CanQuery = false
 	p.CanTouch = false
 	p.CFrame = CFrame.new(pos)
-	p.Name = "LootOrb"
+	p:SetAttribute("OwnerUserId", ownerUserId)
 
-	-- faint glow & bob
-	local a0 = Instance.new("Attachment", p)
-	local pl = Instance.new("PointLight", p)
+	-- light
+	local pl = Instance.new("PointLight")
 	pl.Brightness = 1.2
-	pl.Range = 12
+	pl.Range = 10
 	pl.Color = color
+	pl.Parent = p
 
-	-- pickup sound
-	local s = Instance.new("Sound")
-	s.SoundId = PICKUP_SOUND_ID
-	s.Volume = 0.5
-	s.RollOffMode = Enum.RollOffMode.InverseTapered
-	s.RollOffMinDistance = 8
-	s.RollOffMaxDistance = 60
-	s.Parent = p
+	-- trail (two attachments)
+	local a0 = Instance.new("Attachment"); a0.Name = "Trail0"; a0.Position = Vector3.new(0,  0.35, 0); a0.Parent = p
+	local a1 = Instance.new("Attachment"); a1.Name = "Trail1"; a1.Position = Vector3.new(0, -0.35, 0); a1.Parent = p
+
+	local tr = Instance.new("Trail")
+	tr.Attachment0   = a0
+	tr.Attachment1   = a1
+	tr.Lifetime      = TRAIL_LIFETIME
+	tr.MinLength     = 0.08
+	tr.LightEmission = 0.7
+	tr.Transparency  = NumberSequence.new{
+		NumberSequenceKeypoint.new(0.0, 0.15),
+		NumberSequenceKeypoint.new(1.0, 1.00)
+	}
+	tr.WidthScale    = NumberSequence.new{
+		NumberSequenceKeypoint.new(0.0, TRAIL_WIDTH),
+		NumberSequenceKeypoint.new(1.0, 0.0)
+	}
+	tr.Color         = ColorSequence.new(color) -- <— same color as orb
+	tr.Parent = p
 
 	p.Parent = workspace
-	return p, s
+	return p
 end
 
-local function hrpOfPlayer(plr : Player)
-	local char = plr.Character
-	if not char then return nil end
-	return char:FindFirstChild("HumanoidRootPart")
+local function tweenTo(part, targetCF, dur)
+	return TweenService:Create(part, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = targetCF})
 end
 
--- Tween helper toward a moving target
-local function tweenTo(part : BasePart, targetCF : CFrame, t : number)
-	local ti = TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	local tw = TweenService:Create(part, ti, {CFrame = targetCF})
-	tw:Play()
-	return tw
-end
-
--- Award payload to a player (server-side)
-local function award(plr : Player, payload)
-	if not plr or not payload then return end
+local function award(plr, payload)
+	if not (plr and payload) then return end
 	local flux = tonumber(payload.flux) or 0
-	if flux > 0 then
-		PlayerData.AddFlux(plr, flux)
-	end
-	local ess = payload.essence
-	if type(ess) == "table" then
-		for elem, amt in pairs(ess) do
-			local n = math.max(0, math.floor(tonumber(amt) or 0))
-			if n > 0 then
-				PlayerData.AddEssence(plr, elem, n)
-			end
+	if flux > 0 then PlayerData.AddFlux(plr, flux) end
+	if type(payload.essence) == "table" then
+		for elem, amt in pairs(payload.essence) do
+			amt = math.max(0, math.floor(tonumber(amt) or 0))
+			if amt > 0 then PlayerData.AddEssence(plr, elem, amt) end
 		end
 	end
 	pcall(function() require(SSS.RojoServer.Data.PlayerData).SaveNow(plr) end)
 end
 
--- Single orb life-cycle: spawns, bobs up, then homes to player's HRP until collected
-local function runOrb(plr : Player, startPos : Vector3, color : Color3, payloadPerOrb)
-	local orb, sfx = makeOrb(startPos, color)
+local function hasEssence(payload)
+	if type(payload) ~= "table" then return false end
+	if type(payload.essence) ~= "table" then return false end
+	for _,v in pairs(payload.essence) do
+		if (tonumber(v) or 0) > 0 then return true end
+	end
+	return false
+end
+
+local function runOrb(plr, startPos, color, payloadPerOrb)
+	local ownerId = plr and plr.UserId or 0
+	local orb = makeOrb(startPos, color, ownerId)
 	if not orb then return end
 
-	-- little pop-up tween first
+	-- in runOrb(), replace the pop + immediate home with:
 	local peak = startPos + Vector3.new(0, math.random(2,4), 0)
-	tweenTo(orb, CFrame.new(peak), 0.2).Completed:Wait()
+	tweenTo(orb, CFrame.new(peak), 0.2)
+	task.wait(HOVER_TIME)  -- <— this is the wait you’ll tweak later
 
-	-- Track player HRP
-	local collected = false
-	local timeout = time() + 15 -- auto-timeout after 15s
 
-	while orb.Parent and not collected do
-		-- find target: player's character HRP (NOT hero)
+	local collected, timeoutAt = false, (time() + TIMEOUT_SECONDS)
+
+	while orb.Parent and not collected and time() < timeoutAt do
 		local hrp = hrpOfPlayer(plr)
-
-		-- if player missing, try nearest character in 60 studs; otherwise fade out
 		if not hrp then
-			local best, bestDist = nil, 1e9
-			for _, p in ipairs(Players:GetPlayers()) do
-				local h = hrpOfPlayer(p)
-				if h then
-					local d = (h.Position - orb.Position).Magnitude
-					if d < 60 and d < bestDist then best, bestDist = h, d end
-				end
-			end
-			hrp = best
+			-- Owner missing -> wait briefly, then give up on timeout (no chasing others)
+			task.wait(0.15)
+			continue
 		end
 
-		if not hrp then
-			if time() > timeout then break end
-			task.wait(0.1)
-		else
-			local dest = hrp.Position + Vector3.new(0, 1.2, 0)
-			local d = (dest - orb.Position).Magnitude
-			local dur = math.clamp(d / 40, 0.05, 0.25) -- faster when farther away
-			local tw = tweenTo(orb, CFrame.new(dest), dur)
+		local dest = hrp.Position + Vector3.new(0, 1.2, 0)
+		local d = (dest - orb.Position).Magnitude
+		local dur = math.clamp(d / HOMING_SPEED, 0.06, 0.22)
+		local tw = tweenTo(orb, CFrame.new(dest), dur)
+		tw:Play()
 
-			-- check proximity while tweening
-			local elapsed = 0
-			while elapsed < dur do
-				task.wait(0.03)
-				elapsed += 0.03
-				local nowd = (hrp.Position - orb.Position).Magnitude
-				if nowd < 2.2 then
-					collected = true
-					break
-				end
+		local t = 0
+		while t < dur do
+			task.wait(0.03)
+			t += 0.03
+			local now = hrp.Position
+			if (now - orb.Position).Magnitude < 2.2 then
+				collected = true
+				tw:Cancel()
+				break
 			end
-			if collected then tw:Cancel() end
 		end
-
-		if time() > timeout then break end
 	end
 
-	-- collect or cleanup
 	if collected then
-		-- play pickup sound once on the orb, then destroy
-		pcall(function() sfx:Play() end)
 		award(plr, payloadPerOrb)
-		-- quick shrink/fade
-		local shrink = TweenService:Create(orb, TweenInfo.new(0.12), {Size = Vector3.new(0.1,0.1,0.1), Transparency = 1})
+		-- SFX: tell only this player to play a pickup sound
+		local hasEss = type(payloadPerOrb.essence) == "table"
+					and ((payloadPerOrb.essence.Fire or 0) > 0
+						or (payloadPerOrb.essence.Water or 0) > 0
+						or (payloadPerOrb.essence.Earth or 0) > 0)
+		local sfxKind = hasEss and "essence" or "flux"
+		RE_LootSFX:FireClient(plr, sfxKind, orb.Position)
+		-- shrink+fade
+		local shrink = TweenService:Create(orb, TweenInfo.new(0.12), {
+			Size = Vector3.new(0.1,0.1,0.1), Transparency = 1
+		})
 		shrink:Play()
 		shrink.Completed:Wait()
 	end
@@ -160,19 +166,12 @@ local function runOrb(plr : Player, startPos : Vector3, color : Color3, payloadP
 	if orb and orb.Parent then Debris:AddItem(orb, 0) end
 end
 
----------------------------------------------------------------------
--- PUBLIC API
----------------------------------------------------------------------
+-- Public API ---------------------------------------------------------
 
--- Spawns one or more orbs at 'pos' that home to 'plr' and award payload.
--- payload = { flux = number?, essence = {Fire=number?, Water=number?, Earth=number?} }
--- splitAcross = how many separate orbs to spawn (defaults to 1); each orb gets a fair share.
-function DropService.SpawnLoot(plr : Player, pos : Vector3, payload : table, splitAcross : number?)
+function DropService.SpawnLoot(plr, pos, payload, splitAcross)
 	if not (plr and pos and payload) then return end
-
 	splitAcross = math.max(1, math.floor(tonumber(splitAcross or 1) or 1))
 
-	-- compute per-orb amounts
 	local per = { flux = 0, essence = {} }
 	if payload.flux then per.flux = math.floor((tonumber(payload.flux) or 0) / splitAcross) end
 	if type(payload.essence) == "table" then
@@ -181,49 +180,37 @@ function DropService.SpawnLoot(plr : Player, pos : Vector3, payload : table, spl
 		end
 	end
 
-	-- Decide colors for visual flavor:
-	--  - if single-orb: pick dominant resource color
-	--  - if multiple orbs: rotate between Flux/Fire/Water/Earth visually
 	local palette = {}
 	local function push(c) table.insert(palette, c) end
 	if splitAcross <= 1 then
-		local dom = "Flux"
-		local best = per.flux or 0
+		local dom, best = "Flux", (per.flux or 0)
 		for _,k in ipairs({"Fire","Water","Earth"}) do
 			local v = per.essence[k] or 0
 			if v > best then best, dom = v, k end
 		end
-		push(ELEM_COLORS[dom] or Color3.fromRGB(255,255,255))
+		push(ELEM_COLORS[dom] or Color3.new(1,1,1))
 	else
 		push(ELEM_COLORS.Flux); push(ELEM_COLORS.Fire); push(ELEM_COLORS.Water); push(ELEM_COLORS.Earth)
 	end
 
 	for i = 1, splitAcross do
-		-- small scatter around the start position
 		local offset = Vector3.new(math.random(-2,2), 0, math.random(-2,2))
-		local p = pos + offset
-		local col = palette[((i-1) % #palette)+1]
+		local col = palette[((i-1) % #palette) + 1]
+		local start = pos + offset
 
-		-- copy the per-orb payload (don’t mutate shared tables)
 		local each = { flux = per.flux, essence = {} }
 		for k,v in pairs(per.essence) do each.essence[k] = v end
 
-		task.spawn(runOrb, plr, p, col, each)
+		task.spawn(runOrb, plr, start, col, each)
 	end
 end
 
--- Helper: drop directly from a Model or BasePart (uses its pivot or position)
-function DropService.SpawnLootFrom(inst : Instance, plr : Player, payload : table, splitAcross : number?)
+function DropService.SpawnLootFrom(inst, plr, payload, splitAcross)
 	if not inst then return end
 	local pos
-	if inst:IsA("Model") then
-		pos = inst:GetPivot().Position
-	elseif inst:IsA("BasePart") then
-		pos = inst.Position
-	end
-	if pos then
-		DropService.SpawnLoot(plr, pos, payload, splitAcross)
-	end
+	if inst:IsA("Model") then pos = inst:GetPivot().Position
+	elseif inst:IsA("BasePart") then pos = inst.Position end
+	if pos then DropService.SpawnLoot(plr, pos, payload, splitAcross) end
 end
 
 return DropService

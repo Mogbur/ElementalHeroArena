@@ -8,6 +8,8 @@ local RS = game:GetService("ReplicatedStorage")
 local PlayerData = require(game.ServerScriptService.RojoServer.Data.PlayerData)
 local WeaponStyles = require(RS.Modules.WeaponStyles)
 local StyleMastery = require(RS.Modules.StyleMastery)
+local SSS = game:GetService("ServerScriptService")
+local DropService = require(SSS.RojoServer.Modules.DropService)
 
 local Combat = {}
 
@@ -134,6 +136,22 @@ end
 local function levelDmgMul(plr: Player)
 	local lvl = (plr and plr:GetAttribute("Level")) or 1
 	return 1 + 0.04 * math.max(0, lvl - 1)
+end
+-- Flux reward scales by wave bracket and rank
+local function waveTier(w)
+	if w >= 30 then return 4
+	elseif w >= 20 then return 3
+	elseif w >= 10 then return 2
+	else return 1
+	end
+end
+
+local function fluxFor(rank, wave)
+	-- tweak these tables any time
+	local mini = { 8, 14, 22, 35 } -- miniboss flux per tier
+	local boss = { 18, 30, 46, 70 } -- boss flux per tier
+	local t = waveTier(wave)
+	if rank == "Boss" then return boss[t] else return mini[t] end
 end
 
 -- === Style mastery helpers (global) ===
@@ -388,10 +406,10 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 			local dead = hum.Health <= 0
 			if dead then
-				-- Only MiniBoss/Boss drop Essence; chance scales by wave bracket
+				-- Only MiniBoss/Boss drop loot; Essence chance scales by wave bracket
 				local rank = tostring(model:GetAttribute("Rank") or "")
 				if rank ~= "" and sourcePlayer then
-					-- Choose element: Blessing (if active this segment) > LastElement > random F/W/E
+					-- Choose element: Blessing > LastElement > random F/W/E
 					local function validElem(e) return e == "Fire" or e == "Water" or e == "Earth" end
 					local elem
 					if srcPlot then
@@ -400,10 +418,10 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 						local bEl = srcPlot:GetAttribute("BlessingElem")
 						local bOk = (bEl and (tonumber(srcPlot:GetAttribute("BlessingExpiresSegId")) or -1) == seg and validElem(bEl))
 						if bOk then
-						elem = tostring(bEl)
+							elem = tostring(bEl)
 						else
-						local last = tostring(srcPlot:GetAttribute("LastElement"))
-						if validElem(last) then elem = last end
+							local last = tostring(srcPlot:GetAttribute("LastElement"))
+							if validElem(last) then elem = last end
 						end
 					end
 					if not elem then
@@ -411,7 +429,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 						elem = pool[math.random(1,#pool)]
 					end
 
-					-- Wave-scaled chance p: 1–9:15%, 10–19:25%, 20–29:40%, 30+:60%
+					-- Wave-scaled essence chance p: 1–9:15%, 10–19:25%, 20–29:40%, 30+:60%
 					local wave = tonumber(model:GetAttribute("Wave")) or 1
 					local function chanceFor(w)
 						if w >= 30 then return 0.60
@@ -421,6 +439,7 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 					end
 					local p = chanceFor(wave)
 
+					-- Essence amount (same rules you had)
 					local give = 0
 					if rank == "MiniBoss" then
 						if math.random() < p then give = 1 end
@@ -429,10 +448,30 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 						if math.random() < p then give += 1 end
 					end
 
+					-- >>> Flux reward (always for miniboss/boss, scaled by wave)
+					local fluxAmt = fluxFor(rank, wave)
+
+					-- Build the payload; split into multiple orbs for feel
+					local split = (rank == "Boss") and 3 or 2
+					local payload = { flux = fluxAmt }
 					if give > 0 then
-						pcall(function() PlayerData.AddEssence(sourcePlayer, elem, give) end)
+						payload.essence = { [elem] = give }
+					end
+
+					-- Spawn orbs at the dead enemy; home to the killer only
+					DropService.SpawnLootFrom(model, sourcePlayer, payload, split)
+
+				else
+					-- OPTIONAL: normal enemies get a small flat Flux drip
+					if sourcePlayer then
+						local wave = tonumber(model:GetAttribute("Wave")) or 1
+						local small = ({2,3,4,6})[waveTier(wave)]  -- tweak to taste
+						if small > 0 then
+							DropService.SpawnLootFrom(model, sourcePlayer, { flux = small }, 1)
+						end
 					end
 				end
+
 				-- keep your existing style XP award
 				awardKillStyleXP(sourcePlayer, model)
 			end

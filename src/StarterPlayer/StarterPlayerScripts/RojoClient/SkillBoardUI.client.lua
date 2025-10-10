@@ -724,7 +724,8 @@ local function buildTextGui(textPart)
 		local lv   = getLevel(selectedId)
 		local cur  = readStats(selectedId, math.max(lv,1))
 		local nxt  = (lv < MAX_LEVEL) and readStats(selectedId, lv+1) or nil
-
+		refreshCostRow(selectedId)
+		
 		nameLbl.Text = meta.name
 		lvlLbl.Text  = ("Lv %d / %d"):format(lv, MAX_LEVEL)
 
