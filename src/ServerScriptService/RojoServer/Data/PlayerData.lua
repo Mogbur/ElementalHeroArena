@@ -10,6 +10,9 @@ local DEFAULT = {
   OwnedStyles = {},
   WeaponMain = "Sword", WeaponOff = "Shield",
   Essence = { Fire = 0, Water = 0, Earth = 0 },
+
+  -- NEW: tiers (0/1 shows no badge, 2="II", 3="III")
+  EssenceTier = { Fire = 1, Water = 1, Earth = 1 },
 }
 
 local Sessions = {}
@@ -68,6 +71,10 @@ local function mirrorToLeaderstats(plr, d)
   plr:SetAttribute("Essence_Fire",   (d.Essence and d.Essence.Fire)   or 0)
   plr:SetAttribute("Essence_Water",  (d.Essence and d.Essence.Water)  or 0)
   plr:SetAttribute("Essence_Earth",  (d.Essence and d.Essence.Earth)  or 0)
+    -- NEW: UI reads these to show "II"/"III" badges
+  plr:SetAttribute("EssenceTier_Fire",  (d.EssenceTier and d.EssenceTier.Fire)  or 1)
+  plr:SetAttribute("EssenceTier_Water", (d.EssenceTier and d.EssenceTier.Water) or 1)
+  plr:SetAttribute("EssenceTier_Earth", (d.EssenceTier and d.EssenceTier.Earth) or 1)
 end
 
 Players.PlayerAdded:Connect(function(plr)
@@ -149,5 +156,14 @@ function M.SpendFlux(plr, amt)
   d.Flux -= amt
   mirrorToLeaderstats(plr, d)
   return true
+end
+function M.SetEssenceTier(plr, elem, tier)
+  local d = ensureSession(plr)
+  elem = tostring(elem)
+  if elem ~= "Fire" and elem ~= "Water" and elem ~= "Earth" then elem = "Water" end
+  d.EssenceTier = d.EssenceTier or { Fire=1, Water=1, Earth=1 }
+  tier = math.clamp(tonumber(tier) or 1, 1, 3) -- 1=none, 2="II", 3="III"
+  d.EssenceTier[elem] = tier
+  mirrorToLeaderstats(plr, d)
 end
 return M

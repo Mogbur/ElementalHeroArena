@@ -148,13 +148,24 @@ local function runOrb(plr, startPos, color, payloadPerOrb)
 
 	if collected then
 		award(plr, payloadPerOrb)
-		-- SFX: tell only this player to play a pickup sound
+		-- SFX + UI pulse info: include the deltas so client knows what to bounce
 		local hasEss = type(payloadPerOrb.essence) == "table"
 					and ((payloadPerOrb.essence.Fire or 0) > 0
-						or (payloadPerOrb.essence.Water or 0) > 0
-						or (payloadPerOrb.essence.Earth or 0) > 0)
+					or (payloadPerOrb.essence.Water or 0) > 0
+					or (payloadPerOrb.essence.Earth or 0) > 0)
 		local sfxKind = hasEss and "essence" or "flux"
-		RE_LootSFX:FireClient(plr, sfxKind, orb.Position)
+
+		-- keep it tiny: only send the deltas we just awarded
+		local payload = {
+			flux = payloadPerOrb.flux or 0,
+			essence = {
+				Fire  = (payloadPerOrb.essence and payloadPerOrb.essence.Fire)  or 0,
+				Water = (payloadPerOrb.essence and payloadPerOrb.essence.Water) or 0,
+				Earth = (payloadPerOrb.essence and payloadPerOrb.essence.Earth) or 0,
+			}
+		}
+
+		RE_LootSFX:FireClient(plr, sfxKind, orb.Position, payload)
 		-- shrink+fade
 		local shrink = TweenService:Create(orb, TweenInfo.new(0.12), {
 			Size = Vector3.new(0.1,0.1,0.1), Transparency = 1

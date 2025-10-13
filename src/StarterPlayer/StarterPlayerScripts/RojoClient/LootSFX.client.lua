@@ -5,11 +5,11 @@ local RE      = Remotes:WaitForChild("LootPickupSFX")
 local lp      = Players.LocalPlayer
 
 local SFX = {
-    flux    = "rbxassetid://13189443030",   -- replace with your flux sound
-    essence = "rbxassetid://8561934524",    -- make this different (more “important”)
+    flux    = "rbxassetid://7942735306",   -- replace with your flux sound
+    essence = "rbxassetid://9085317509",    -- make this different (more “important”)
 }
 
-RE.OnClientEvent:Connect(function(kind, pos)
+RE.OnClientEvent:Connect(function(kind, pos, payload)
     local id = SFX[kind] or SFX.flux
     local part = Instance.new("Part")
     part.Anchored = true
