@@ -29,6 +29,24 @@ local TIMEOUT_SECONDS = 60    -- how long to chase owner
 local TRAIL_LIFETIME  = 0.6
 local TRAIL_WIDTH     = 0.55
 
+-- put near the top (after services)
+local function groundAbove(pos: Vector3): Vector3
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { workspace.CurrentCamera }
+-- (keep FilterType = Exclude and IgnoreWater = false)
+    params.IgnoreWater = false
+
+    -- cast from well above downwards
+    local origin = pos + Vector3.new(0, 100, 0)
+    local res = workspace:Raycast(origin, Vector3.new(0, -500, 0), params)
+    if res then
+        -- sit just above the surface (orb radius ~0.4)
+        return Vector3.new(pos.X, res.Position.Y + 1.1, pos.Z)
+    end
+    return pos + Vector3.new(0, 3, 0) -- fallback: a little above given pos
+end
+
 local function hrpOfPlayer(plr)
 	local char = plr and plr.Character
 	return char and char:FindFirstChild("HumanoidRootPart")
@@ -207,7 +225,7 @@ function DropService.SpawnLoot(plr, pos, payload, splitAcross)
 	for i = 1, splitAcross do
 		local offset = Vector3.new(math.random(-2,2), 0, math.random(-2,2))
 		local col = palette[((i-1) % #palette) + 1]
-		local start = pos + offset
+		local start = groundAbove(pos + offset)         -- << clamp to surface here
 
 		local each = { flux = per.flux, essence = {} }
 		for k,v in pairs(per.essence) do each.essence[k] = v end

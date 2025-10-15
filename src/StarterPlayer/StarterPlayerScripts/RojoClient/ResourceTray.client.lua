@@ -51,6 +51,14 @@ gui.IgnoreGuiInset = true
 gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = PG
+-- invisible selection image so focused chips don’t show a white box
+local invisibleSel = Instance.new("ImageLabel")
+invisibleSel.Name = "InvisibleSel"
+invisibleSel.ImageTransparency = 1
+invisibleSel.BackgroundTransparency = 1
+invisibleSel.Size = UDim2.fromOffset(1,1)
+invisibleSel.Parent = gui
+
 -- Responsive root scale for very small or very large screens
 local rootScale = Instance.new("UIScale")
 rootScale.Scale = 1
@@ -77,7 +85,7 @@ local topLeft = Instance.new("Frame")
 topLeft.Name = "TopLeftChips"
 topLeft.AnchorPoint = Vector2.new(0,0)
 topLeft.Position = UDim2.new(0, 10, 0.5, -190)  -- left side, just above the tray
-topLeft.Size = UDim2.fromOffset(0, 36)           -- height baseline
+topLeft.Size = UDim2.fromOffset(0, 56)           -- height baseline
 topLeft.AutomaticSize = Enum.AutomaticSize.XY     -- width grows to fit chips
 topLeft.BackgroundTransparency = 1
 topLeft.Parent = gui
@@ -85,7 +93,7 @@ topLeft.Parent = gui
 local row = Instance.new("UIListLayout", topLeft)
 row.FillDirection = Enum.FillDirection.Horizontal
 row.HorizontalAlignment = Enum.HorizontalAlignment.Left
-row.Padding = UDim.new(0, 8)
+row.Padding = UDim.new(0, 12)
 
 -- Collapsible left tray
 local tray = Instance.new("Frame")
@@ -228,6 +236,7 @@ vlist.HorizontalAlignment = Enum.HorizontalAlignment.Left
 
 local function mkChip(iconId, labelText)
 	local b = Instance.new("ImageButton")
+    b.SelectionImageObject = invisibleSel
 	b.AutoButtonColor = true
 	b.BackgroundTransparency = 0.85
 	b.BackgroundColor3 = Color3.fromRGB(20,20,20)
@@ -264,23 +273,50 @@ local function mkChip(iconId, labelText)
 	return b, txt, img
 end
 
+-- Style a currency chip to be "icon + number" with no box
+local function styleCurrencyChip(chip, txt, img)
+    chip.BackgroundTransparency = 1
+    chip.Image = ""
+    chip.AutoButtonColor = false
+    chip.Size = UDim2.fromOffset(0, 56)              -- height baseline
+    chip.AutomaticSize = Enum.AutomaticSize.X        -- grow width to fit text
+    local s = chip:FindFirstChildOfClass("UIStroke")
+    if s then s.Transparency = 1 end
+
+    -- icon same size as essences
+    img.Size = UDim2.fromOffset(48, 48)
+    img.Position = UDim2.fromOffset(0, 4)
+
+    -- amount to the RIGHT of the icon, tight gap
+    txt.Parent = chip
+    txt.AnchorPoint = Vector2.new(0, 0.5)
+    txt.Position = UDim2.fromOffset(48 + 6, 28)      -- 6px gap from icon
+    txt.Size = UDim2.fromOffset(110, 32)             -- width is enough for "999.9k"
+    txt.TextXAlignment = Enum.TextXAlignment.Left
+    txt.TextYAlignment = Enum.TextYAlignment.Center
+    txt.TextScaled = true
+    txt.TextStrokeTransparency = 0.2
+end
+
 -- Currency chips (top-left)
 local moneyChip, moneyTxt, moneyImg
 if SHOW_CURRENCY.Money then
     moneyChip, moneyTxt, moneyImg = mkChip(ICONS.Money, "0")
-    moneyChip.Size = UDim2.fromOffset(120, 36)
-    moneyChip.BackgroundTransparency = 0.75
+    styleCurrencyChip(moneyChip, moneyTxt, moneyImg)
     moneyChip.Parent = topLeft
-    moneyChip:FindFirstChildOfClass("UIStroke").Transparency = 0.6
 end
 
 local fluxChip, fluxTxt, fluxImg
 if SHOW_CURRENCY.Flux then
     fluxChip, fluxTxt, fluxImg = mkChip(ICONS.Flux, "0")
-    fluxChip.Size = UDim2.fromOffset(120, 36)
-    fluxChip.BackgroundTransparency  = 0.75
+    styleCurrencyChip(fluxChip, fluxTxt, fluxImg)
     fluxChip.Parent = topLeft
-    fluxChip:FindFirstChildOfClass("UIStroke").Transparency  = 0.6
+
+     -- >>> make FLUX icon a bit bigger <<<
+    fluxImg.Size = UDim2.fromOffset(56, 56)      -- was 48,48
+    fluxImg.Position = UDim2.fromOffset(0, 0)    -- center vertically
+    fluxTxt.Position = UDim2.fromOffset(56 + 8, 28)  -- shift number to the right
+    fluxTxt.Size = UDim2.fromOffset(120, 32)     -- a touch wider for safety
 end
 
 
@@ -477,13 +513,6 @@ RE_LootSFX.OnClientEvent:Connect(function(kind, pos, payload)
         if (ess.Fire  or 0) > 0 then pulseImage(essenceImg.Fire,  ELEM_COLOR.Fire)  end
         if (ess.Water or 0) > 0 then pulseImage(essenceImg.Water, ELEM_COLOR.Water) end
         if (ess.Earth or 0) > 0 then pulseImage(essenceImg.Earth, ELEM_COLOR.Earth) end
-    end
-
-    -- Fallback: kind says "essence" but no per-element payload
-    if not ess and kind == "essence" then
-        pulseImage(essenceImg.Fire,  ELEM_COLOR.Fire)
-        pulseImage(essenceImg.Water, ELEM_COLOR.Water)
-        pulseImage(essenceImg.Earth, ELEM_COLOR.Earth)
     end
 end)
 

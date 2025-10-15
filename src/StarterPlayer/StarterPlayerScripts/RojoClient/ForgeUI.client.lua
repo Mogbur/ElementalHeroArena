@@ -358,6 +358,9 @@ end
 -- === BIND BUTTONS (AFTER doBuy) ===
 bind(close, function()
     gui.Enabled = false
+	GuiService.SelectedObject = nil            -- NEW
+    GuiService.AutoSelectGuiEnabled = false    -- NEW
+    GuiService.GuiNavigationEnabled = false    -- NEW
     CAS:UnbindAction("ForgeClose")
 end)
 bind(cardCore.buy, function() doBuy("CORE") end)
@@ -412,6 +415,8 @@ blessCard.buy.NextSelectionRight = close
 RE_Open.OnClientEvent:Connect(function(plot)
 	plotCurrent = plot
 	gui.Enabled = true
+	GuiService.GuiNavigationEnabled = true     -- NEW
+    GuiService.AutoSelectGuiEnabled = true     -- NEW
 	GuiService.SelectedObject = cardCore.buy
 
 	CAS:BindAction(
@@ -433,6 +438,9 @@ if RE_Close then
 	RE_Close.OnClientEvent:Connect(function(_plot)
 		if _plot == nil or _plot == plotCurrent then
 			gui.Enabled = false
+			GuiService.SelectedObject = nil     -- NEW
+            GuiService.AutoSelectGuiEnabled = false
+            GuiService.GuiNavigationEnabled = false
 			CAS:UnbindAction("ForgeClose")
 		end
 	end)

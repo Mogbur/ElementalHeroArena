@@ -45,6 +45,12 @@ local ELEM_COLOR = {
 	Water = Color3.fromRGB( 90,180,255),
 	Earth = Color3.fromRGB(200,175,120),
 }
+-- Put this right under ELEM_COLOR
+local ELEM_ICON = {
+	Fire  = "rbxassetid://91949104597643",
+	Water = "rbxassetid://107473921254840",
+	Earth = "rbxassetid://89574210557730",
+}
 local MAX_LEVEL = 5
 
 -- small color helpers (kept if you want to reuse later)
@@ -502,13 +508,29 @@ local function buildTextGui(textPart)
 	badgeStroke.Transparency = 0.25
 	badgeStroke.Parent = badge
 
-	local badgeText = Instance.new("TextLabel")
-	badgeText.BackgroundTransparency = 1
-	badgeText.Size = UDim2.fromScale(1, 1)
-	badgeText.Font = Enum.Font.GothamBlack
-	badgeText.TextScaled = true
-	badgeText.TextColor3 = Color3.new(1,1,1)
-	badgeText.Parent = badge
+	-- icon inside the pill
+	local badgeIcon = Instance.new("ImageLabel")
+	badgeIcon.Name = "Icon"
+	badgeIcon.BackgroundTransparency = 1
+	badgeIcon.AnchorPoint = Vector2.new(0.5,0.5)
+	badgeIcon.Position = UDim2.fromScale(0.5,0.5)
+	badgeIcon.Size = UDim2.fromScale(0.78, 0.78)   -- tight inside the pill
+	badgeIcon.ScaleType = Enum.ScaleType.Fit
+	badgeIcon.Image = ""
+	badgeIcon.Parent = badge
+
+	-- very soft element gradient in the pill (so it’s not the same “flat” look as the tray)
+	local badgeGrad = Instance.new("UIGradient")
+	badgeGrad.Rotation = 90
+	badgeGrad.Parent = badge
+
+	-- slow, subtle rotation to keep it alive
+	task.spawn(function()
+		while badge and badge.Parent do
+			local t = Tween:Create(badgeGrad, TweenInfo.new(6, Enum.EasingStyle.Linear), {Rotation = badgeGrad.Rotation + 180})
+			t:Play(); t.Completed:Wait()
+		end
+	end)
 
 	-- shift the name to the right so it never overlaps the badge
 	nameLbl.Position = UDim2.fromScale(0.12, 0)
@@ -602,80 +624,17 @@ local function buildTextGui(textPart)
 	perkLbl.TextColor3 = Color3.fromRGB(235,235,235)
 	perkLbl.Text = ""
 	perkLbl.Parent = root
-	-- === Cost row (small chips) ===
-	local costRow = Instance.new("Frame")
-	costRow.Name = "CostRow"
-	costRow.BackgroundTransparency = 1
-	costRow.AnchorPoint = Vector2.new(0.5, 0)
-	costRow.Position = UDim2.fromScale(0.5, 0.68)
-	costRow.Size = UDim2.fromScale(0.92, 0.12)
-	costRow.Parent = root -- or your text root frame
 
-	local list = Instance.new("UIListLayout", costRow)
-	list.FillDirection = Enum.FillDirection.Horizontal
-	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	list.VerticalAlignment = Enum.VerticalAlignment.Center
-	list.Padding = UDim.new(0, 6)
-
-	local function mkChip(imgId, txt)
-		local chip = Instance.new("Frame")
-		chip.BackgroundTransparency = 0.35
-		chip.BackgroundColor3 = Color3.fromRGB(20,20,20)
-		chip.Size = UDim2.fromOffset(120, 28)
-		chip.Parent = costRow
-		local corner = Instance.new("UICorner", chip); corner.CornerRadius = UDim.new(0, 8)
-		local stroke = Instance.new("UIStroke", chip); stroke.Thickness = 2; stroke.Color = Color3.fromRGB(0,0,0)
-
-		local icon = Instance.new("ImageLabel")
-		icon.BackgroundTransparency = 1
-		icon.Size = UDim2.fromOffset(22,22)
-		icon.Position = UDim2.new(0, 6, 0.5, 0)
-		icon.AnchorPoint = Vector2.new(0,0.5)
-		icon.Image = imgId
-		icon.Parent = chip
-
-		local label = Instance.new("TextLabel")
-		label.BackgroundTransparency = 1
-		label.TextScaled = true
-		label.Font = Enum.Font.GothamBold
-		label.TextColor3 = Color3.new(1,1,1)
-		label.Text = txt
-		label.Position = UDim2.new(0, 34, 0, 0)
-		label.Size = UDim2.new(1, -40, 1, 0)
-		label.Parent = chip
-		return chip, label
-	end
-
-	-- “slots” we can reuse on refresh
-	local chipFlux, fluxLabel = mkChip("rbxassetid://<your_flux_icon>", "0")
-	local chipFire, fireLabel = mkChip("rbxassetid://<fire_icon>", "0")
-	local chipWater,waterLabel= mkChip("rbxassetid://<water_icon>", "0")
-	local chipEarth,earthLabel= mkChip("rbxassetid://<earth_icon>", "0")
-
-	local function refreshCostRow(skillId)
-		local lv = tonumber(lp:GetAttribute("Skill_"..skillId)) or 0
-		local flux, ess = nextCost(skillId, lv)
-		chipFlux.Visible  = (flux > 0)
-		fluxLabel.Text    = "x"..tostring(flux)
-
-		local f = tonumber(ess.Fire or 0)
-		local w = tonumber(ess.Water or 0)
-		local e = tonumber(ess.Earth or 0)
-		chipFire.Visible  = f > 0;  fireLabel.Text  = "x"..f
-		chipWater.Visible = w > 0;  waterLabel.Text = "x"..w
-		chipEarth.Visible = e > 0;  earthLabel.Text = "x"..e
-	end
-
-	-- hold-to-upgrade
+	-- === UPGRADE BUTTON + FILL (create first) ===
 	local upgrade = Instance.new("TextButton")
 	upgrade.Size = UDim2.fromScale(1,0.19)
 	upgrade.Position = UDim2.fromScale(0,0.81)
 	upgrade.BackgroundColor3 = Color3.fromRGB(60,140,60)
-	upgrade.TextColor3 = Color3.new(1,1,1)
+	upgrade.Text = ""  -- label lives in upText now
+	upgrade.AutoButtonColor = false
 	upgrade.Font = Enum.Font.GothamBlack
 	upgrade.TextScaled = true
-	upgrade.Text = "Hold to level up"
-	upgrade.AutoButtonColor = false
+	upgrade.TextColor3 = Color3.new(1,1,1)
 	upgrade.Parent = root
 	Instance.new("UICorner", upgrade).CornerRadius = UDim.new(0,12)
 
@@ -685,6 +644,98 @@ local function buildTextGui(textPart)
 	fill.BackgroundTransparency = 0.15
 	fill.Parent = upgrade
 	Instance.new("UICorner", fill).CornerRadius = UDim.new(0,12)
+
+		-- === INLINE COSTS inside the button (left), then the label ===
+	local costInline = Instance.new("Frame")
+	costInline.Name = "CostInline"
+	costInline.BackgroundTransparency = 1
+	costInline.AnchorPoint = Vector2.new(0, 0.5)
+	costInline.Position = UDim2.fromScale(0, 0.5)
+	costInline.Size = UDim2.fromOffset(0, 26)         -- fixed height; width auto
+	costInline.AutomaticSize = Enum.AutomaticSize.X
+	costInline.Parent = upgrade
+
+	local listIn = Instance.new("UIListLayout", costInline)
+	listIn.FillDirection = Enum.FillDirection.Horizontal
+	listIn.Padding = UDim.new(0, 6)
+	listIn.VerticalAlignment = Enum.VerticalAlignment.Center
+
+	local function mkMini(imgId)
+		local f = Instance.new("Frame")
+		f.BackgroundTransparency = 1
+		f.Size = UDim2.fromOffset(0, 26)
+		f.AutomaticSize = Enum.AutomaticSize.X
+		f.Parent = costInline
+
+		local ic = Instance.new("ImageLabel")
+		ic.BackgroundTransparency = 1
+		ic.Size = UDim2.fromOffset(24,24)
+		ic.AnchorPoint = Vector2.new(0,0.5)
+		ic.Position = UDim2.new(0,0,0.5,0)
+		ic.Image = imgId
+		ic.Parent = f
+
+		local lbl = Instance.new("TextLabel")
+		lbl.BackgroundTransparency = 1
+		lbl.TextScaled = true
+		lbl.Font = Enum.Font.GothamBold
+		lbl.TextColor3 = Color3.new(1,1,1)
+		lbl.Text = "x0"
+		lbl.Position = UDim2.new(0, 26, 0, 0)
+		lbl.Size = UDim2.fromOffset(34,24)
+		lbl.Parent = f
+		return f, lbl
+	end
+
+	-- same icons you used in ResourceTray
+	local iconFlux  = "rbxassetid://13219079846"
+	local iconFire  = "rbxassetid://86006404657315"
+	local iconWater = "rbxassetid://83220825471966"
+	local iconEarth = "rbxassetid://100036266210611"
+
+	local fluxChip,  fluxLbl  = mkMini(iconFlux)
+	local fireChip,  fireLbl  = mkMini(iconFire)
+	local waterChip, waterLbl = mkMini(iconWater)
+	local earthChip, earthLbl = mkMini(iconEarth)
+
+	-- actual text lives after the chips
+	local upText = Instance.new("TextLabel")
+	upText.Name = "UpgradeText"
+	upText.BackgroundTransparency = 1
+	upText.TextScaled = true
+	upText.Font = Enum.Font.GothamBlack
+	upText.TextColor3 = Color3.new(1,1,1)
+	upText.TextXAlignment = Enum.TextXAlignment.Left
+	upText.AnchorPoint = Vector2.new(0,0.5)
+	upText.Position = UDim2.fromScale(0,0.5) -- adjusted in placeUpgradeText()
+	upText.Size     = UDim2.fromScale(1,1)
+	upText.Parent = upgrade
+
+	local function placeUpgradeText()
+		local used = listIn.AbsoluteContentSize.X
+		upText.Position = UDim2.new(0, used + 12, 0.5, 0)
+		upText.Size     = UDim2.new(1, -(used + 16), 1, 0)
+	end
+	listIn:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(placeUpgradeText)
+	task.defer(placeUpgradeText)
+
+	-- refresher for those inline costs
+	local function refreshCostInline(skillId)
+		local lv = tonumber(lp:GetAttribute("Skill_"..skillId)) or 0
+		local flux, ess = nextCost(skillId, lv)
+
+		fluxChip.Visible = flux > 0; if flux > 0 then fluxLbl.Text = "x"..flux end
+
+		local f = tonumber(ess.Fire or 0)
+		local w = tonumber(ess.Water or 0)
+		local e = tonumber(ess.Earth or 0)
+
+		fireChip.Visible  = f > 0; if f > 0 then fireLbl.Text  = "x"..f end
+		waterChip.Visible = w > 0; if w > 0 then waterLbl.Text = "x"..w end
+		earthChip.Visible = e > 0; if e > 0 then earthLbl.Text = "x"..e end
+
+		task.defer(placeUpgradeText)
+	end
 
 	-- locked overlay
 	lockedOverlay = Instance.new("TextLabel")
@@ -724,8 +775,8 @@ local function buildTextGui(textPart)
 		local lv   = getLevel(selectedId)
 		local cur  = readStats(selectedId, math.max(lv,1))
 		local nxt  = (lv < MAX_LEVEL) and readStats(selectedId, lv+1) or nil
-		refreshCostRow(selectedId)
-		
+		refreshCostInline(selectedId)
+
 		nameLbl.Text = meta.name
 		lvlLbl.Text  = ("Lv %d / %d"):format(lv, MAX_LEVEL)
 
@@ -735,7 +786,15 @@ local function buildTextGui(textPart)
 		fx.apply(elem)
 		badge.BackgroundColor3 = base
 		badgeStroke.Color = base
-		badgeText.Text = elemEmoji(elem)
+		-- new: icon + gradient
+		badgeIcon.Image = ELEM_ICON[elem] or ""
+		if badge:FindFirstChildOfClass("UIGradient") then
+			local g = badge:FindFirstChildOfClass("UIGradient")
+			g.Color = ColorSequence.new(
+				brighten(base, 0.28),
+				dim(base, 0.10)
+			)
+		end
 
 		stripe.BackgroundColor3 = base
 
@@ -792,10 +851,10 @@ local function buildTextGui(textPart)
 		local plot = myPlot()
 		syncCombatLockOverlay()
 		if lv >= MAX_LEVEL then
-			upgrade.Text = "Max level"
+			upText.Text = "Max level"
 			upgrade.BackgroundColor3 = Color3.fromRGB(90,90,90)
 		else
-			upgrade.Text = ("Hold to level up  →  %d"):format(lv+1)
+			upText.Text = ("Hold to level up  →  %d"):format(lv+1)
 			upgrade.BackgroundColor3 = Color3.fromRGB(60,140,60)
 		end
 	end
