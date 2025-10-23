@@ -73,7 +73,7 @@ return {
 		quakepulse=Skills.quakepulse.cd
 	},
 	-- NEW: global cooldown used by HeroAI (seconds)
-	GLOBAL_CD = 3,
+	GLOBAL_CD = 2.5,
 	
 	CLIENT = CLIENT,
 	Client = CLIENT,

@@ -1,4 +1,4 @@
-local thresholds = {0, 100, 300, 700, 1500, 3000} -- Lvl1..Lvl5 gates are indices 1..5; last is cap
+local thresholds = {0, 100, 450, 1200, 2500, 6000} -- Lvl1..Lvl5 gates are indices 1..5; last is cap
 local M = {}
 
 function M.thresholds() return thresholds end
@@ -49,7 +49,7 @@ function M.bonuses(styleId: string, xp: number)
 	if styleId == "SwordShield" then
 		return { drFlat = 0.03 * lvl }                 -- +3..+15% DR
 	elseif styleId == "Bow" then
-		return { critDmgMul = 1.0 + 0.02 * lvl }      -- +2% per level
+		return { critDmgMul = 1.0 + 0.04 * lvl, critChanceAdd = 0.02 * lvl }      -- +4% per level, +2/4/6/8/10% crit chance
 	elseif styleId == "Mace" then
 		local map = {0.03, 0.06, 0.08, 0.10, 0.15}
 		return { stunChance = map[lvl] or 0.10 }       -- 3/6/8/10/15%

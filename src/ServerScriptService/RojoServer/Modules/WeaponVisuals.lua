@@ -229,9 +229,17 @@ function M.apply(hero: Model)
 			local cfg = rigOffsets.W_Sword
 			attachOne(hero, "W_Sword", cfg.hand, cfg.pos, cfg.rot)
 		end
-		if off == "shield" or off == "" then
+		if main == "sword" and (off == "shield" or off == "") then
 			local cfg = rigOffsets.W_Shield
 			attachOne(hero, "W_Shield", cfg.hand, cfg.pos, cfg.rot)
+		end
+		-- safety: ensure no shield remains on non-sword styles (just in case)
+		if main ~= "sword" then
+			for _,d in ipairs(hero:GetDescendants()) do
+				if d.Name == "W_Shield" then
+					d:Destroy()
+				end
+			end
 		end
 	end
 end

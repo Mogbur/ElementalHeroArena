@@ -23,6 +23,7 @@ end
 -- Optional VFX bus
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local RE_VFX  = Remotes:WaitForChild("SkillVFX", 10)
+local RE_CVFX = Remotes:WaitForChild("CombatVFX", 10)
 
 local Brain  = {}
 local ACTIVE = setmetatable({}, { __mode = "k" })
@@ -133,6 +134,39 @@ local function refreshBars(hero: Model, hum: Humanoid, hpFill: Frame, shFill: Fr
 		local frac = (max > 0) and (s / max) or 0
 		shFill.Size = UDim2.fromScale(math.clamp(frac, 0, 1), 1)
 	end
+end
+local function applySlow(target: Instance, pct: number, dur: number)
+    pct  = math.clamp(pct or 0.3, 0, 0.95) -- 30% default
+    dur  = math.max(0.1, dur or 2.0)
+
+    -- Debuff window for HUD/VFX
+    local nowT = time()
+    target:SetAttribute("SlowStartAt", nowT)
+    target:SetAttribute("SlowDuration", dur)
+    target:SetAttribute("SlowUntil",   nowT + dur)
+    target:SetAttribute("SlowPct",     pct)
+
+    -- Movement slow (optional; comment out if you don’t want it yet)
+    local hum = target:FindFirstChildOfClass("Humanoid")
+    local pre
+    if hum then
+        pre = hum.WalkSpeed
+        hum.WalkSpeed = math.max(2, math.floor(pre * (1 - pct) + 0.5))
+    end
+    task.delay(dur, function()
+        -- clear window
+        if time() >= (tonumber(target:GetAttribute("SlowUntil")) or 0) - 0.01 then
+            target:SetAttribute("SlowStartAt", 0)
+            target:SetAttribute("SlowDuration", 0)
+            target:SetAttribute("SlowUntil", 0)
+            target:SetAttribute("SlowPct", 0)
+        end
+        if hum and hum.Parent and pre then hum.WalkSpeed = pre end
+    end)
+
+    -- Attack-speed slow: set an attribute your Enemy AI can read when deciding attack cadence
+    -- (In your enemy brains, multiply their attack cooldown by (1 + pct) if SlowUntil > now)
+    target:SetAttribute("AttackSpdSlowMul", 1 + pct)
 end
 
 -- ========= combat brain =========
@@ -320,6 +354,7 @@ function Brain.attach(hero: Model)
 		-- Basic swing cadence = base / (style * core(Haste))
 		local baseSwing = 0.60
 		SWING_COOLDOWN = baseSwing / math.max(0.2, (S.spdMul or 1.0) * coreSpdMul)
+		bowSwingCount = 0
 	end
 
 	applyStyle()
@@ -635,8 +670,20 @@ function Brain.attach(hero: Model)
 			applyDamage(target, base, Color3.fromRGB(255,140,70), true)
 			local dotFrac = fireboltDotFrac(lv)
 			if dotFrac > 0 then
-				local perTick = base * (dotFrac/3)
-				for i=1,3 do
+				local ticks = 3
+				local dotDur = ticks -- seconds (1s per tick)
+				-- mark debuff window for the client HUD/VFX
+				local nowT = time()
+				if target and target.Parent then
+					target:SetAttribute("FireStartAt", nowT)
+					target:SetAttribute("FireDuration", dotDur)
+					target:SetAttribute("FireUntil", nowT + dotDur)
+					-- Optional: set a custom icon per enemy type
+					-- target:SetAttribute("FireIconId", "rbxassetid://YOUR_FIRE_ICON")
+				end
+
+				local perTick = base * (dotFrac / ticks)
+				for i = 1, ticks do
 					task.delay(i, function()
 						if target and target.Parent then
 							applyDamage(target, perTick, Color3.fromRGB(255,100,60), false)
@@ -794,8 +841,7 @@ function Brain.attach(hero: Model)
 			faceTowards(hrp, p)
 			hero:SetAttribute("MeleeTick", os.clock())
 
-			-- every Nth shot we’ll *only* flag a visual “surge” (red number),
-			-- but DO NOT pre-multiply damage here—Combat handles Bow cadence/bonus.
+			-- every Nth shot we flag a visual “surge” (red number); damage bonus is in Combat
 			local surge = false
 			if S.forcedCritNth and S.forcedCritNth > 0 then
 				bowSwingCount += 1
@@ -805,6 +851,12 @@ function Brain.attach(hero: Model)
 			-- simple projectile to the target point
 			local from = hrp.Position + Vector3.new(0, 2, 0)
 			local dir  = (p - from).Unit
+
+			-- VFX trail ping for surge shots
+			if RE_CVFX and surge then
+				RE_CVFX:FireAllClients({ kind = "bow_surge_shot", from = from, to = p })
+			end
+
 			local bolt = Instance.new("Part")
 			bolt.Size = Vector3.new(0.25, 0.25, 1.2)
 			bolt.Anchored, bolt.CanCollide = true, false
@@ -848,7 +900,7 @@ function Brain.attach(hero: Model)
 		-- mark as BASIC so style bonuses (e.g., Mace flags) apply in Combat
 		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true, { isBasic = true })
 
-		-- optional: Mace stun (unchanged)
+		-- optional: Mace stun (improved)
 		if styleId == "Mace" and B and (B.stunChance or 0) > 0 then
 			local now = time()
 			local lastS = lastStunAt[target] or 0
@@ -857,12 +909,44 @@ function Brain.attach(hero: Model)
 				local dur = S.stunDur or 0.60
 				local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
 				if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur *= 0.5 end
+
 				local h2 = target:FindFirstChildOfClass("Humanoid")
 				if h2 then
 					local pre = h2.WalkSpeed; h2.WalkSpeed = 0
 					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
 					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
-					task.delay(dur, function() if h2.Parent and h2.Health > 0 then h2.WalkSpeed = pre end end)
+
+					-- === Debuff attributes for the client HUD ===
+					-- (You’ll set the icon id in the client defaults or here as an Attribute)
+					target:SetAttribute("StunStartAt", now)
+					target:SetAttribute("StunDuration", dur)
+					target:SetAttribute("StunnedUntil", now + dur)
+					-- Optional: you can send a per-enemy icon id if you want:
+					-- target:SetAttribute("StunIconId", "rbxassetid://PUT_YOUR_ICON_HERE")
+
+					-- Simple blue outline while stunned (auto-cleans)
+					local hl = Instance.new("Highlight")
+					hl.Name = "StunHL"
+					hl.OutlineColor = Color3.fromRGB(120,180,255)
+					hl.FillTransparency = 1
+					hl.Adornee = target
+					hl.Parent = target
+					Debris:AddItem(hl, dur)
+					if RE_CVFX then
+						local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+						if pp then RE_CVFX:FireAllClients({ kind = "mace_stun_pulse", pos = pp.Position }) end
+					end
+
+					task.delay(dur, function()
+						if h2.Parent and h2.Health > 0 then h2.WalkSpeed = pre end
+						-- Clear attributes if not refreshed
+						local untilT = tonumber(target:GetAttribute("StunnedUntil")) or 0
+						if time() >= untilT - 0.01 then
+							target:SetAttribute("StunnedUntil", 0)
+							target:SetAttribute("StunDuration", 0)
+							target:SetAttribute("StunStartAt", 0)
+						end
+					end)
 				end
 			end
 		end
@@ -879,6 +963,7 @@ function Brain.attach(hero: Model)
 		if hero:GetAttribute("BarsVisible") == 1 then
 			resetAllCooldowns()
 			applyStyle()
+			bowSwingCount = 0
 		end
 	end))
 

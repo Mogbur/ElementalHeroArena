@@ -478,6 +478,7 @@ ensureRE("SkillPurchaseRequest")
 ensureRE("SkillEquipRequest")
 ensureRE("DamageNumbers")
 ensureRE("SkillVFX")
+ensureRE("CombatVFX")
 
 -- === State ===
 local playerToPlot  = {} -- [Player] = Model
@@ -867,10 +868,14 @@ local function mirrorPlayerSkillsToHero(plot, hero, ownerId)
 	copy("Skill_aquaburst"); copy("Skill_quake")
 	copy("Equip_Primary")
 
-	-- bring over last saved weapon style
-	copy("WeaponMain")
-	copy("WeaponOff")
-	pcall(function() WeaponVisuals.apply(hero) end)
+	-- Only copy saved style while the plot is idle (not during an active run)
+	local plot = hero:FindFirstAncestorWhichIsA("Model")
+	local atIdle = plot and (plot:GetAttribute("AtIdle") == true)
+	if atIdle then
+		copy("WeaponMain")
+		copy("WeaponOff")
+		pcall(function() WeaponVisuals.apply(hero) end)
+	end
 
 	-- defaults for brand-new players (or bad data)
 	if (hero:GetAttribute("WeaponMain") or "") == "" then
@@ -1047,7 +1052,12 @@ end
 
 -- Stronger ground placement for hero (two-pass)
 local function teleportHeroTo(plot, anchorName, opts)
-	local hero = ensureHero(plot, plot:GetAttribute("OwnerUserId")); if not hero then return end
+	-- keep the current run's weapon style; only spawn if missing
+	local hero = getHero(plot)
+	if not hero then
+		hero = ensureHero(plot, plot:GetAttribute("OwnerUserId"))
+		if not hero then return end
+	end
 	local anchor = getAnchor(plot, anchorName)
 	if not (anchor and anchor:IsA("BasePart")) then
 		warn(("[PlotService] Missing anchor '%s' in %s"):format(anchorName, plot.Name))
@@ -1332,9 +1342,11 @@ local function spawnWave(plot, portal)
 
 	-- Early-wave balance scalars (lighter at W1–W5, neutral afterward)
 	local function earlyWaveScalars(w)
-		if w == 1 then return 0.42, 0.40 end  -- hpMul, dmgMul
-		if w == 2 then return 0.58, 0.48 end
-		if w <= 5 then return 0.78, 0.62 end
+		if w == 1 then return 0.42, 0.40 end -- same
+		if w == 2 then return 0.58, 0.48 end -- same
+		if w == 3 then return 0.70, 0.58 end
+		if w == 4 then return 0.74, 0.60 end
+		if w == 5 then return 0.78, 0.62 end
 		return 1.0, 1.0
 	end
 	local hpMul, dmgMul = earlyWaveScalars(waveIdx)
@@ -1936,8 +1948,9 @@ local function startWaveCountdown(plot, portal, owner)
 	burstRays(totem, 36); playAt(totem.gem, TOTEM_SFX.go, 1.0)
 
 	local h = ensureHero(plot, owner.UserId)
+	h:SetAttribute("ZoneTier", plot:GetAttribute("PortalTier") or 1)
 	hookHealthFirewall(h)
-	hookSpawnHealthGuard(h)           -- guard hook for spawn window
+	hookSpawnHealthGuard(h)      -- guard hook for spawn window
 	preWaveGuard(h, ARENA_SPAWN_GUARD_SEC)
 	h:SetAttribute("LastHitBy", 0)
 

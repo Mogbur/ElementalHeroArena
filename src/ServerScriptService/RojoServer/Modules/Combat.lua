@@ -127,7 +127,7 @@ local function snap(plr: Player)
 		-- S&S
 		guardDR = W.guardDR or 0.5, guardCD = W.guardCD or 6, drFlat = B.drFlat or 0,
 		-- Bow
-		nth = W.forcedCritNth or 6, bonus = W.forcedCritBonus or 0.4, critMul = B.critDmgMul or 1,
+		nth = W.forcedCritNth or 6, bonus = W.forcedCritBonus or 0.4, critMul = B.critDmgMul or 1, critChanceAdd = B.critChanceAdd or 0,
 		-- Mace
 		stunChance = B.stunChance or 0, stunDur = W.stunDur or 0.6,
 	}
@@ -225,6 +225,12 @@ local function incomingFromStyle(targetPlayer: Player, damage: number)
 		if (os.clock() - last) >= S.guardCD then
 			guardT[targetPlayer] = os.clock()
 			damage *= (1 - S.guardDR)
+			-- VFX: spark when the guard is consumed
+			local Remotes = RS:WaitForChild("Remotes")
+			local RE = Remotes:FindFirstChild("CombatVFX")
+			if RE and targetPlayer and targetPlayer.Character then
+				RE:FireAllClients({ kind = "shield_block", who = targetPlayer.Character })
+			end
 		end
 	end
 	return damage
@@ -286,23 +292,31 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- === Level: outgoing damage scaling ===
 	outDmg = outDmg * levelDmgMul(sourcePlayer)
 	-- === Global crits (respects plot/player CritChance & CritMult) ===
-	local didCrit = false
-	do
-		local cc, cm = 0, 2.0
-		if srcPlot then
-			cc = tonumber(srcPlot:GetAttribute("CritChance")) or 0
-			cm = tonumber(srcPlot:GetAttribute("CritMult"))  or 2.0
-		elseif sourcePlayer then
-			cc = tonumber(sourcePlayer:GetAttribute("CritChance")) or 0
-			cm = tonumber(sourcePlayer:GetAttribute("CritMult"))  or 2.0
-		end
+    local didCrit = false
+    do
+        local cc, cm = 0, 2.0
+        if srcPlot then
+            cc = tonumber(srcPlot:GetAttribute("CritChance")) or 0
+            cm = tonumber(srcPlot:GetAttribute("CritMult"))  or 2.0
+        elseif sourcePlayer then
+            cc = tonumber(sourcePlayer:GetAttribute("CritChance")) or 0
+            cm = tonumber(sourcePlayer:GetAttribute("CritMult"))  or 2.0
+        end
 
-		-- Bow’s forced crit cadence is handled separately; this is the general crit system.
-		if cc > 0 and math.random() < cc then
-			didCrit = true
-			outDmg = math.floor(outDmg * cm + 0.5)
-		end
-	end
+        -- add Bow mastery crit chance (0 for other styles)
+        local addCC = 0
+        if sourcePlayer then
+            local Ssrc = snap(sourcePlayer)
+            addCC = tonumber(Ssrc.critChanceAdd) or 0
+        end
+        local chance = math.clamp(cc + addCC, 0, 1)
+
+        if chance > 0 and math.random() < chance then
+            didCrit = true
+            outDmg = math.floor(outDmg * cm + 0.5)
+        end
+    end
+
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then
 		-- hard mute during landing / guard
