@@ -10,6 +10,8 @@ local WeaponStyles = require(RS.Modules.WeaponStyles)
 local StyleMastery = require(RS.Modules.StyleMastery)
 local SSS = game:GetService("ServerScriptService")
 local DropService = require(SSS.RojoServer.Modules.DropService)
+local Remotes = RS:WaitForChild("Remotes")
+local RE_CVFX = Remotes:FindFirstChild("CombatVFX")
 
 local Combat = {}
 
@@ -383,13 +385,34 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				hum:TakeDamage(afterShield)
 			end
 
-			-- Optional: Mace stun
+			-- Optional: Mace stun (authoritative here)
 			if flags.stun and afterShield > 0 then
 				local old = hum.WalkSpeed
 				hum.WalkSpeed = 0
+
+				-- VFX/SFX ping (ring + glonk) for clients
+				local rp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+				local RE = RS:WaitForChild("Remotes"):FindFirstChild("CombatVFX")
+				if RE and rp then
+					RE:FireAllClients({ kind = "mace_stun", pos = rp.Position })
+				end
+
+				-- (optional) set debuff window attrs for HUD
+				local nowT = time()
+				model:SetAttribute("StunStartAt", nowT)
+				model:SetAttribute("StunDuration", flags.stunDur or 0.6)
+				model:SetAttribute("StunnedUntil", nowT + (flags.stunDur or 0.6))
+
 				task.delay(flags.stunDur or 0.6, function()
 					if hum.Parent and hum.Health > 0 then
 						hum.WalkSpeed = old
+					end
+					-- clear if not refreshed
+					local untilT = tonumber(model:GetAttribute("StunnedUntil")) or 0
+					if time() >= untilT - 0.01 then
+						model:SetAttribute("StunnedUntil", 0)
+						model:SetAttribute("StunDuration", 0)
+						model:SetAttribute("StunStartAt", 0)
 					end
 				end)
 			end

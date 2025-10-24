@@ -852,9 +852,9 @@ function Brain.attach(hero: Model)
 			local from = hrp.Position + Vector3.new(0, 2, 0)
 			local dir  = (p - from).Unit
 
-			-- VFX trail ping for surge shots
-			if RE_CVFX and surge then
-				RE_CVFX:FireAllClients({ kind = "bow_surge_shot", from = from, to = p })
+			-- Send bow tracer (every shot). Surge just tweaks visuals & sound client-side.
+			if RE_CVFX then
+				RE_CVFX:FireAllClients({ kind = "bow_shot", from = from, to = p, surge = surge })
 			end
 
 			local bolt = Instance.new("Part")
@@ -896,61 +896,16 @@ function Brain.attach(hero: Model)
 
 		faceTowards(hrp, p)
 		hero:SetAttribute("MeleeTick", os.clock())
-
+		-- tell clients to play the right whoosh for this swing
+		if RE_CVFX then
+			RE_CVFX:FireAllClients({
+				kind  = "melee_swing",
+				style = styleId,         -- "SwordShield" or "Mace"
+				pos   = hrp.Position,
+			})
+		end
 		-- mark as BASIC so style bonuses (e.g., Mace flags) apply in Combat
 		applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), true, { isBasic = true })
-
-		-- optional: Mace stun (improved)
-		if styleId == "Mace" and B and (B.stunChance or 0) > 0 then
-			local now = time()
-			local lastS = lastStunAt[target] or 0
-			if (now - lastS) >= (S.stunICD or 1.0) and math.random() < B.stunChance then
-				lastStunAt[target] = now
-				local dur = S.stunDur or 0.60
-				local rankAttr = target:GetAttribute("rank") or target:GetAttribute("Rank")
-				if rankAttr == "MiniBoss" or rankAttr == "Boss" then dur *= 0.5 end
-
-				local h2 = target:FindFirstChildOfClass("Humanoid")
-				if h2 then
-					local pre = h2.WalkSpeed; h2.WalkSpeed = 0
-					local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
-					if pp then DamageNumbers.pop(pp, "STUN", Color3.fromRGB(120,180,255)) end
-
-					-- === Debuff attributes for the client HUD ===
-					-- (You’ll set the icon id in the client defaults or here as an Attribute)
-					target:SetAttribute("StunStartAt", now)
-					target:SetAttribute("StunDuration", dur)
-					target:SetAttribute("StunnedUntil", now + dur)
-					-- Optional: you can send a per-enemy icon id if you want:
-					-- target:SetAttribute("StunIconId", "rbxassetid://PUT_YOUR_ICON_HERE")
-
-					-- Simple blue outline while stunned (auto-cleans)
-					local hl = Instance.new("Highlight")
-					hl.Name = "StunHL"
-					hl.OutlineColor = Color3.fromRGB(120,180,255)
-					hl.FillTransparency = 1
-					hl.Adornee = target
-					hl.Parent = target
-					Debris:AddItem(hl, dur)
-					if RE_CVFX then
-						local pp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
-						if pp then RE_CVFX:FireAllClients({ kind = "mace_stun_pulse", pos = pp.Position }) end
-					end
-
-					task.delay(dur, function()
-						if h2.Parent and h2.Health > 0 then h2.WalkSpeed = pre end
-						-- Clear attributes if not refreshed
-						local untilT = tonumber(target:GetAttribute("StunnedUntil")) or 0
-						if time() >= untilT - 0.01 then
-							target:SetAttribute("StunnedUntil", 0)
-							target:SetAttribute("StunDuration", 0)
-							target:SetAttribute("StunStartAt", 0)
-						end
-					end)
-				end
-			end
-		end
-
 		return true
 	end
 

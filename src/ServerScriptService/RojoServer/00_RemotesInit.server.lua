@@ -25,6 +25,7 @@ ensure("LootPickupSFX")  -- add alongside your other core remotes
 -- Skills/VFX
 ensure("CastSkillRequest")
 ensure("SkillVFX")
+ensure("CombatVFX")
 ensure("DamageNumbers")
 
 -- Forge
