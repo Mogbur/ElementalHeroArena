@@ -21,6 +21,7 @@ ensure("CheckpointRF",   "RemoteFunction")
 ensure("OpenCheckpointUI","RemoteEvent")
 ensure("LootPickupSFX")  -- add alongside your other core remotes
 -- (WaveBanner is gone, do not recreate)
+ensure("AdminRF", "RemoteFunction")
 
 -- Skills/VFX
 ensure("CastSkillRequest")
