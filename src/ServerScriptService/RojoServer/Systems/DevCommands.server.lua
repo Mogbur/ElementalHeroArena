@@ -10,6 +10,8 @@ local Data         = require(SSS.RojoServer.Data.PlayerData)
 
 local Remotes = RS:WaitForChild("Remotes")
 local OpenEquipMenu = Remotes:FindFirstChild("OpenEquipMenu")
+local RunService = game:GetService("RunService")
+local ALLOW = { [8887364350] = true }  -- your userId, add teammates
 
 local function findPlotFor(plr)
 	local plots = workspace:FindFirstChild("Plots")
@@ -19,6 +21,11 @@ local function findPlotFor(plr)
 			return p
 		end
 	end
+end
+
+local function canUse(plr)
+    if RunService:IsStudio() then return true end
+    return ALLOW[plr.UserId] == true
 end
 
 local function refreshBars(plr)
@@ -110,6 +117,7 @@ local function giveFlux(plr: Player, amtAny)
 end
 
 local function handle(plr, raw)
+	if not canUse(plr) then return end
 	local msg = string.lower(raw or "")
 
 	-- reset
@@ -150,4 +158,4 @@ if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	end
 end
 
-print("[DevCommands] Dev commands ready: !resetme | !resetme minimal | !setlevel <n> | !giveflux <n>")
+print("[DevCommands] Ready: !resetme | !resetme minimal | !setlevel <n> | !giveflux <n>")

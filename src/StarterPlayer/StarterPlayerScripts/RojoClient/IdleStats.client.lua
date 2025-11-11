@@ -148,10 +148,13 @@ for _, attr in ipairs({
     plr:GetAttributeChangedSignal(attr):Connect(snapStats)
 end
 
+local acc = 0
 RunService.Heartbeat:Connect(function(dt)
-    -- update ≈ 2x per second
-    -- (Heartbeat gives smoother updates than wait(); skip tiny frames)
-    if dt >= 0.3 then snapStats() end
+    acc += dt
+    if acc >= 0.35 then
+        acc = 0
+        snapStats()
+    end
 end)
 
 -- Initial draw

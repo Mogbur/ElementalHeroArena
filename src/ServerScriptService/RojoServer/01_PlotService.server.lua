@@ -1,4 +1,4 @@
--- PlotService.server.lua
+-- 01_PlotService.server.lua
 -- Claims a plot, spawns/teleports the Hero, spawns waves, shows Victory/Defeat,
 -- heals 50% between wins, and cleans leftovers. Enemies are sanitized so they
 -- stand on the ground and actually path.
