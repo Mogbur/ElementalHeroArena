@@ -24,12 +24,13 @@ ForgeRF.OnServerInvoke = function(plr, cmd, wave, payload)
             -- Still allow UI to open without a plot, but return a clear failure
             return { core = nil, util = nil, reroll = { cost = 40, free = false } }
         end
-        return false, "no-plot"
+        return false, "no_plot"
     end
 
     if cmd == "offers" then
         -- client only sends wave; the offer uses internal per-run cache
-        return Forge:Offers(plr, wave)
+        local waveServer = tonumber(plot:GetAttribute("CurrentWave")) or 1
+        return Forge:Offers(plr, waveServer)
     elseif cmd == "buy" then
         -- spam guard for purchases only
         local now = os.clock()
@@ -39,7 +40,8 @@ ForgeRF.OnServerInvoke = function(plr, cmd, wave, payload)
 
         payload = payload or {}
         payload.plot = plot -- ignore any client-supplied plot
-        return Forge:Buy(plr, wave, payload)
+        local waveServer = tonumber(plot:GetAttribute("CurrentWave")) or 1
+        return Forge:Buy(plr, waveServer, payload)
     else
         return false, "bad_cmd"
     end

@@ -1,4 +1,4 @@
--- ServerScriptService/RojoServer/Data/PlayerData.server.lua
+-- ServerScriptService/RojoServer/Data/PlayerData.lua
 local DSS = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local store = DSS:GetDataStore("EHA_Player_v1")

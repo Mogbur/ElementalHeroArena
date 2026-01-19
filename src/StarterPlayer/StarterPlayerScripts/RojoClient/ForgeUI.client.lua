@@ -67,6 +67,24 @@ title.Size = UDim2.new(1, -20, 0, 40)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.Parent = root
 
+local fluxLbl = Instance.new("TextLabel")
+fluxLbl.Name = "FluxLbl"
+fluxLbl.BackgroundTransparency = 1
+fluxLbl.Font = Enum.Font.GothamBold
+fluxLbl.TextScaled = true
+fluxLbl.TextColor3 = Color3.fromRGB(200,210,255)
+fluxLbl.TextXAlignment = Enum.TextXAlignment.Right
+fluxLbl.Text = "Flux: 0"
+fluxLbl.Size = UDim2.new(0, 140, 0, 26)
+fluxLbl.Position = UDim2.new(1, -190, 0, 14) -- left of close button
+fluxLbl.Parent = root
+
+local function refreshFlux()
+	local v = lp:GetAttribute("Flux") or 0
+	fluxLbl.Text = ("Flux: %d"):format(v)
+end
+lp:GetAttributeChangedSignal("Flux"):Connect(refreshFlux)
+
 local close = Instance.new("TextButton")
 close.Text = "×" -- looks cleaner than "X"
 close.Font = Enum.Font.GothamBold
@@ -239,14 +257,14 @@ end
 
 local function showErrorMessage(card, key)
 	local map = {
-		poor       = "Not enough money",
+		poor       = "Not enough Flux",
 		no_shrine  = "Forge not available",
 		not_owner  = "Not your plot",
-		no_money   = "No Money stat",
+		no_money   = "No Currency",
 		bad_choice = "Bad choice",
 		error      = "Server error",
 		max        = "Already at MAX",   -- << add this line
-		full       = "Already full HP",      -- NEW
+		full       = "Already at full HP",      -- NEW
 		active     = "Already active",       -- NEW (same segment)
 	}
 	local msg = map[key] or tostring(key or "failed")
@@ -282,7 +300,7 @@ local function refreshOffers()
 		cardCore.buy.Active = false
 		cardCore.buy.BackgroundColor3 = Color3.fromRGB(60,110,210)
 	else
-		cardCore.sub.Text = ("Tier %d → %d\n%d%% → +%d%%\n%d$")
+		cardCore.sub.Text = ("Tier %d → %d\n%d%% → +%d%%\n%d Flux")
 			:format(tier, tier+1, nowPct, nextPct, price)
 		cardCore.buy.Text  = ("Upgrade (%d)"):format(price)
 		cardCore.buy.AutoButtonColor = true
@@ -294,7 +312,7 @@ local function refreshOffers()
 	local util   = offers.util or {}
 	local uPrice = util.price or 0
 	cardUtil.name.Text = util.name or util.id or "Utility"
-	cardUtil.sub.Text  = ("%d$"):format(uPrice)
+	cardUtil.sub.Text  = ("%d Flux"):format(uPrice)
 	cardUtil.buy.Text  = ("Buy (%d)"):format(uPrice)
 	cardUtil.buy.AutoButtonColor = true
 	cardUtil.buy.Active = true
@@ -308,7 +326,7 @@ local function refreshOffers()
 	if offers.bless then
 		blessCard.frame.Visible = true
 		blessCard.lbl.Text = ("Elemental Blessing: %s"):format(offers.bless.elem)
-		blessCard.buy.Text = ("Buy (%d)"):format(offers.bless.price or 100)
+		blessCard.buy.Text = ("Buy (%d Flux)"):format(offers.bless.price or 100)
 		blessCard.buy.Active = true
 	else
 		blessCard.frame.Visible = false
@@ -350,9 +368,8 @@ local function doBuy(kind)
 		end
 	end
 
-	cardCore.buy.Active = true
-	cardUtil.buy.Active = true
 	buying = false
+	task.defer(refreshOffers)
 end
 
 -- === BIND BUTTONS (AFTER doBuy) ===
@@ -431,6 +448,7 @@ RE_Open.OnClientEvent:Connect(function(plot)
 		Enum.KeyCode.Escape,      -- keyboard
 		Enum.KeyCode.ButtonB      -- gamepad
 	)
+	refreshFlux()
 	refreshOffers()
 end)
 

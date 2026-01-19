@@ -1,3 +1,5 @@
+-- ReplicatedStorage/Modules/StyleMastery.lua
+-- Defines XP thresholds and level/bonus calculations for Style Mastery
 local thresholds = {0, 100, 450, 1200, 2500, 6000} -- Lvl1..Lvl5 gates are indices 1..5; last is cap
 local M = {}
 

@@ -529,6 +529,8 @@ RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
     plot:SetAttribute("CurrentWave", w)
 	plot:SetAttribute("FullHealOnNextStart", true)
 
+	plot:SetAttribute("OpenForgeOnNextStart", true)
+
 	-- NEW: persist progress right away on checkpoint select
 	pcall(function() PlayerData.SaveNow(plr) end)
 
@@ -1590,12 +1592,16 @@ local function rewardAndAdvance(plot, clearedWave)
 			plot:SetAttribute("UtilExpiresSegId", seg)
 		end
 
-		-- Blessing
-		local blessSeg = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -1
-		if blessSeg ~= seg then
+		local prevSeg = segIdFromWave(clearedWave)  -- segment you just finished (wave 5/10/15...)
+		local nextSeg = segIdFromWave(clearedWave + 1)
+
+		-- Blessing expires when leaving prevSeg (i.e. after boss/segment complete)
+		local blessSeg = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -999
+		if blessSeg ~= nextSeg then
+			-- entering a segment where blessing wasn't bought => clear
 			plot:SetAttribute("BlessingElem", nil)
-			plot:SetAttribute("BlessingExpiresSegId", seg)
 		end
+		plot:SetAttribute("BlessingExpiresSegId", nextSeg)
 	end
 end
 
@@ -1934,6 +1940,21 @@ local function startWaveCountdown(plot, portal, owner)
 	setCombatLock(plot, true)
 
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
+
+	if plot:GetAttribute("OpenForgeOnNextStart") == true then
+        plot:SetAttribute("OpenForgeOnNextStart", false)
+
+        -- spawn forge so they can spend banked Flux before fighting
+        Forge:SpawnElementalForge(plot)
+
+        -- keep combat locked until they press Start again
+        setCombatLock(plot, true)
+
+        -- optional: make sure WaveStarting resets so VFX doesn't vanish
+        plot:SetAttribute("WaveStarting", false)
+
+        return
+    end
 
 	-- 3 / 2 / 1
 	if owner and RE_WaveText then RE_WaveText:FireClient(owner, {kind="countdown", n=3, wave=waveIdx}) end
