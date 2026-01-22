@@ -57,6 +57,18 @@ local function plotByOwner(userId)
 	end
 end
 
+local function heroModelForPlayer(plr: Player)
+	if not plr then return nil end
+	local plot = plotByOwner(plr.UserId)
+	if plot then
+		local hero = plot:FindFirstChild("Hero", true)
+		if hero and hero:IsA("Model") then
+			return hero
+		end
+	end
+	return plr.Character
+end
+
 -- segment id from a plot's CurrentWave
 local function segId(plot: Instance)
 	local w = tonumber(plot and plot:GetAttribute("CurrentWave")) or 1
@@ -199,13 +211,16 @@ local function outgoingFromStyle(attacker: Player, baseDamage: number, isBasic: 
 		-- Bow: every Nth BASIC is a forced crit (+bonus damage and extra crit multiplier from mastery)
 		if S.id == "Bow" then
 			bowCount[attacker] = (bowCount[attacker] or 0) + 1
-			if bowCount[attacker] % (S.nth or 6) == 0 then
+			if (bowCount[attacker] % (S.nth or 6)) == 0 then
 				flags.forcedCrit = true
 				mul *= (1 + (S.bonus or 0))
 				flags.critDmgMul = S.critMul or 1
+				print("[BowDbg] forced shot", bowCount[attacker], "bonus", S.bonus, "critMul", flags.critDmgMul)
 			end
+		end
+
 		-- Mace: BASIC hits can stun (chance from mastery)
-		elseif S.id == "Mace" and isBasic and math.random() < (S.stunChance or 0) then
+		if S.id == "Mace" and math.random() < (S.stunChance or 0) then
 			flags.stun = true
 			flags.stunDur = S.stunDur or 0.6
 		end
@@ -230,8 +245,9 @@ local function incomingFromStyle(targetPlayer: Player, damage: number)
 			-- VFX: spark when the guard is consumed
 			local Remotes = RS:WaitForChild("Remotes")
 			local RE = Remotes:FindFirstChild("CombatVFX")
-			if RE and targetPlayer and targetPlayer.Character then
-				RE:FireAllClients({ kind = "shield_block", who = targetPlayer.Character })
+			local whoModel = heroModelForPlayer(targetPlayer)
+			if RE and whoModel then
+				RE:FireAllClients({ kind = "shield_block", who = whoModel })
 			end
 		end
 	end
@@ -293,31 +309,33 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 	-- <<< ATK core and Overcharge
 	-- === Level: outgoing damage scaling ===
 	outDmg = outDmg * levelDmgMul(sourcePlayer)
-	-- === Global crits (respects plot/player CritChance & CritMult) ===
-    local didCrit = false
-    do
-        local cc, cm = 0, 2.0
-        if srcPlot then
-            cc = tonumber(srcPlot:GetAttribute("CritChance")) or 0
-            cm = tonumber(srcPlot:GetAttribute("CritMult"))  or 2.0
-        elseif sourcePlayer then
-            cc = tonumber(sourcePlayer:GetAttribute("CritChance")) or 0
-            cm = tonumber(sourcePlayer:GetAttribute("CritMult"))  or 2.0
-        end
+	-- === Global crits (BASICS ONLY) ===
+	local didCrit = false
+	if isBasic == true then
+		do
+			local cc, cm = 0, 2.0
+			if srcPlot then
+				cc = tonumber(srcPlot:GetAttribute("CritChance")) or 0
+				cm = tonumber(srcPlot:GetAttribute("CritMult"))  or 2.0
+			elseif sourcePlayer then
+				cc = tonumber(sourcePlayer:GetAttribute("CritChance")) or 0
+				cm = tonumber(sourcePlayer:GetAttribute("CritMult"))  or 2.0
+			end
 
-        -- add Bow mastery crit chance (0 for other styles)
-        local addCC = 0
-        if sourcePlayer then
-            local Ssrc = snap(sourcePlayer)
-            addCC = tonumber(Ssrc.critChanceAdd) or 0
-        end
-        local chance = math.clamp(cc + addCC, 0, 1)
+			-- add Bow mastery crit chance (0 for other styles)
+			local addCC = 0
+			if sourcePlayer then
+				local Ssrc = snap(sourcePlayer)
+				addCC = tonumber(Ssrc.critChanceAdd) or 0
+			end
+			local chance = math.clamp(cc + addCC, 0, 1)
 
-        if chance > 0 and math.random() < chance then
-            didCrit = true
-            outDmg = math.floor(outDmg * cm + 0.5)
-        end
-    end
+			if chance > 0 and math.random() < chance then
+				didCrit = true
+				outDmg = math.floor(outDmg * cm + 0.5)
+			end
+		end
+	end
 
 	-- ===== spawn-guard / friendly fire / mute =====
 	if model then
@@ -354,6 +372,14 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 	-- final dmg after elements
 	local dmg = math.max(0, math.floor(outDmg * elemMultOut + 0.5))
+		-- Dev stats: track last hit numbers (includes core/OC/level/crit/forced)
+	if sourcePlayer then
+		sourcePlayer:SetAttribute("Dbg_LastOutDmg", math.floor(outDmg + 0.5)) -- before element mult
+		sourcePlayer:SetAttribute("Dbg_LastFinalDmg", dmg)                    -- after element mult, before shields
+		sourcePlayer:SetAttribute("Dbg_LastIsBasic", isBasic == true and 1 or 0)
+		sourcePlayer:SetAttribute("Dbg_LastElem", tostring(attackElem or "Neutral"))
+	end
+
 
 	-- Humanoid target path (includes incoming style DR, shields, crit-dmg multiplier, stun)
 	if model then
@@ -373,6 +399,13 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 			-- shield absorb (ShieldHP/ShieldExpireAt attrs)
 			local afterShield = absorbShield(model, dmg)
+			-- Bow "surge" impact VFX/SFX at the enemy (NOT on shooter)
+			if flags.forcedCrit and RE_CVFX then
+				local rp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+				if rp then
+					RE_CVFX:FireAllClients({ kind = "bow_surge_hit", pos = rp.Position })
+				end
+			end
 
 			-- forced-crit extra crit damage (Bow cadence mastery)
 			if flags.forcedCrit and (flags.critDmgMul or 1) > 1 then
@@ -383,6 +416,9 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or -1)
 				model:SetAttribute("LastCombatDamageAt", os.clock())
 				hum:TakeDamage(afterShield)
+					if sourcePlayer then
+					sourcePlayer:SetAttribute("Dbg_LastApplied", math.max(0, math.floor(afterShield + 0.5)))
+				end
 			end
 
 			-- Optional: Mace stun (authoritative here)
@@ -416,30 +452,6 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 					end
 				end)
 			end
-
-			-- ===== Second Wind (revive once per segment) =====
-			do
-				if hum.Health <= 0 then
-					-- Only for heroes; check plot's segment-scoped counter
-					local plot = model:FindFirstAncestorWhichIsA("Model")
-					if plot and (model:GetAttribute("IsHero") == true
-						or (Players:GetPlayerFromCharacter(model) ~= nil)) then
-						local left = tonumber(plot:GetAttribute("Util_SecondWindLeft")) or 0
-						local utilSeg = tonumber(plot:GetAttribute("UtilExpiresSegId")) or -999
-						if left > 0 and utilSeg == segId(plot) then
-							-- consume + revive to 60% with a tiny i-frame
-							plot:SetAttribute("Util_SecondWindLeft", left - 1)
-							model:SetAttribute("GuardAllowDrop", 1)
-							local targetHP = math.max(1, math.floor(hum.MaxHealth * 0.60 + 0.5))
-							hum.Health = targetHP
-							model:SetAttribute("GuardAllowDrop", 0)
-							model:SetAttribute("InvulnUntil", os.clock() + 1.5)
-							return false, 0
-						end
-					end
-				end
-			end
-			-- ================================================
 
 			local dead = hum.Health <= 0
 			if dead then

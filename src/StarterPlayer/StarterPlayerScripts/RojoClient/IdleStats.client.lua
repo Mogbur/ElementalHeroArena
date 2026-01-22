@@ -104,9 +104,11 @@ end
 local function clamp01(x) return math.max(0, math.min(1, x)) end
 
 local function snapStats()
-    local ch = plr.Character
-    if not ch then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
+    local plot = findOwnPlot()
+    if not plot then return end
+    local hero = plot:FindFirstChild("Hero", true)
+    if not (hero and hero:IsA("Model")) then return end
+    local hum = hero:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
     local styleId = currentStyleId()
@@ -121,20 +123,31 @@ local function snapStats()
 
     local baseSwing = 0.60
     local swing = baseSwing / math.max(0.2, (S.spdMul or 1) * coreSpdMul)
+    local lastOut   = plr:GetAttribute("Dbg_LastOutDmg")
+    local lastFinal = plr:GetAttribute("Dbg_LastFinalDmg")
+    local lastApply = plr:GetAttribute("Dbg_LastApplied")
+    local lastElem  = plr:GetAttribute("Dbg_LastElem")
+    local lastBasic = plr:GetAttribute("Dbg_LastIsBasic")
 
     local lastMul = math.max(0.01, plr:GetAttribute("LastHpMul") or 1)
-    local baseMax = ch:GetAttribute("BaseMaxHealth") or (hum.MaxHealth / lastMul)
+    local baseMax = hero:GetAttribute("BaseMaxHealth") or hero:GetAttribute("BaseMax") or hum.MaxHealth
     local maxHP = math.floor(baseMax * (S.hpMul or 1) * coreHpMul + 0.5)
 
     local lvl = plr:GetAttribute("Level") or 1
     local cc  = plr:GetAttribute("CritChance") or (plot and (plot:GetAttribute("CritChance") or 0)) or 0
     local cm  = plr:GetAttribute("CritMult")  or (plot and (plot:GetAttribute("CritMult")  or 2)) or 2
     local flux = plr:GetAttribute("Flux") or 0
+    local lastOut     = plr:GetAttribute("Dbg_LastOutDmg") or 0
+    local lastFinal   = plr:GetAttribute("Dbg_LastFinalDmg") or 0
+    local lastApplied = plr:GetAttribute("Dbg_LastApplied") or 0
+    local lastElem    = plr:GetAttribute("Dbg_LastElem") or "Neutral"
 
     body.Text = string.format(
-        "<b>Level %d</b>  |  <b>Style:</b> %s  |  <b>E.Flux:</b> %d\nMax HP: %d\nBasic Swing: %.2fs\nCrit: %d%%%%  x%.2f",
-        lvl, styleId, flux, maxHP, swing, math.floor(cc * 100 + 0.5), cm
+        "<b>Level %d</b>  |  <b>Style:</b> %s  |  <b>E.Flux:</b> %d\nMax HP: %d\nBasic Swing: %.2fs\nCrit: %d%%%%  x%.2f\n<b>Last DMG</b>: %d (applied) | %d (final) | %d (pre-elem) | %s",
+        lvl, styleId, flux, maxHP, swing, math.floor(cc * 100 + 0.5), cm,
+        lastApplied, lastFinal, lastOut, tostring(lastElem)
     )
+
 end
 
 -- Live updates
@@ -143,7 +156,8 @@ plr.CharacterAdded:Connect(function()
 end)
 
 for _, attr in ipairs({
-    "Level","WeaponMain","WeaponOff","LastHpMul","CritChance","CritMult","Flux"
+	"Level","WeaponMain","WeaponOff","LastHpMul","CritChance","CritMult","Flux",
+	"Dbg_LastOutDmg","Dbg_LastFinalDmg","Dbg_LastApplied","Dbg_LastElem"
 }) do
     plr:GetAttributeChangedSignal(attr):Connect(snapStats)
 end

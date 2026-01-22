@@ -136,6 +136,17 @@ local setSignpost
 local pinFrozenHeroToIdleGround -- forward declaration
 local wireCheckpointMarker   -- ← add this
 local getHero
+local mirrorPlayerSkillsToHero
+
+local function getAnchor(plot, name) return plot:FindFirstChild(name, true) end
+
+local function findHeroAnchor(plot)
+	local exact = getAnchor(plot, HERO_IDLE_ANCHOR)
+	if exact and exact:IsA("BasePart") then return exact end
+	for _, d in ipairs(plot:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
+	end
+end
 
 local function playAt(partOrPos, soundId, vol)
 	if not soundId then return end
@@ -540,15 +551,6 @@ RF_Checkpoint.OnServerInvoke = function(plr, verb, arg)
 end
 
 -- === Helpers ===
-local function getAnchor(plot, name) return plot:FindFirstChild(name, true) end
-
-local function findHeroAnchor(plot)
-	local exact = getAnchor(plot, HERO_IDLE_ANCHOR)
-	if exact and exact:IsA("BasePart") then return exact end
-	for _, d in ipairs(plot:GetDescendants()) do
-		if d:IsA("BasePart") and d.Name:lower():find("heroanchor") then return d end
-	end
-end
 -- Disable/enable .Touched on an entire rig (keeps collisions unchanged)
 local function setModelCanTouch(model: Model, canTouch: boolean)
 	for _, bp in ipairs(model:GetDescendants()) do
@@ -752,6 +754,14 @@ local function teleportHeroToIdle(plot: Model)
 	hero:SetAttribute("ShieldExpireAt", 0)
 	clearRunUtils(plot)
 	plot:SetAttribute("AtIdle", true)
+	-- NEW: now that we're truly idle, re-sync style from player and apply visuals
+	local ownerId = plot:GetAttribute("OwnerUserId") or 0
+	if mirrorPlayerSkillsToHero then
+		pcall(function()
+			mirrorPlayerSkillsToHero(plot, hero, ownerId)
+		end)
+	end
+
 	-- stand up & heal
 	if hum then
 		hum.Sit = false
@@ -856,7 +866,7 @@ local function ensureAttrs(plot)
 	end
 end
 
-local function mirrorPlayerSkillsToHero(plot, hero, ownerId)
+mirrorPlayerSkillsToHero = function(plot, hero, ownerId)
 	if not (plot and hero) then return end
 	local plr = plotToPlayer[plot] or Players:GetPlayerByUserId(ownerId or 0)
 	if not plr then return end
@@ -870,10 +880,14 @@ local function mirrorPlayerSkillsToHero(plot, hero, ownerId)
 	copy("Skill_aquaburst"); copy("Skill_quake")
 	copy("Equip_Primary")
 
-	-- Only copy saved style while the plot is idle (not during an active run)
-	local plot = hero:FindFirstAncestorWhichIsA("Model")
-	local atIdle = plot and (plot:GetAttribute("AtIdle") == true)
-	if atIdle then
+	-- Style mirroring rule:
+	--   - ONLY copy style from Player -> Hero when the plot is at the weapon-stand idle state.
+	--   - During combat/checkpoints/defeat-shrine, the HERO keeps its current style.
+	local plotModel = hero:FindFirstAncestorWhichIsA("Model")
+	local atIdle    = plotModel and (plotModel:GetAttribute("AtIdle") == true)
+	local locked    = plotModel and (plotModel:GetAttribute("CombatLocked") == true)
+
+	if atIdle and locked then
 		copy("WeaponMain")
 		copy("WeaponOff")
 		pcall(function() WeaponVisuals.apply(hero) end)
@@ -896,13 +910,14 @@ local function ensureHeroBrain(hero)
 	if not ok then warn("[PlotService] HeroBrain.attach failed:", err) end
 end
 
-function getHero(plot)
+getHero = function(plot)
     local h = plot:FindFirstChild("Hero", true)
     if h and h:IsA("Model")
        and h:FindFirstChildOfClass("Humanoid")
        and h:FindFirstChild("HumanoidRootPart") then
         return h
     end
+    return nil
 end
 
 local function destroyHero(plot)
@@ -1168,7 +1183,7 @@ do
 		return board, face
 	end
 
-	function setSignpost(plot, player)
+	setSignpost = function(plot, player)
 		local surfacePart, face = getSignSurfaceParts(plot); if not surfacePart then return end
 		for _, c in ipairs(surfacePart:GetChildren()) do
 			if (c:IsA("SurfaceGui") and c.Name == "BoardGui")
@@ -1551,8 +1566,7 @@ local function rewardAndAdvance(plot, clearedWave)
 	if plr and plr:FindFirstChild("leaderstats") and plr.leaderstats:FindFirstChild("Money") then
 		plr.leaderstats.Money.Value += W.rewardMoney
 	end
-	plot:SetAttribute("Seeds", (plot:GetAttribute("Seeds") or 0) + W.rewardSeeds)
-
+	
 	-- progress wave
 	plot:SetAttribute("CurrentWave", clearedWave + 1)
 	local maxC = tonumber(plot:GetAttribute("MaxClearedWave")) or 0
@@ -1592,15 +1606,16 @@ local function rewardAndAdvance(plot, clearedWave)
 			plot:SetAttribute("UtilExpiresSegId", seg)
 		end
 
-		local prevSeg = segIdFromWave(clearedWave)  -- segment you just finished (wave 5/10/15...)
-		local nextSeg = segIdFromWave(clearedWave + 1)
+		local prevSeg = ((clearedWave - 1) // WAVE_CHECKPOINT_INTERVAL)  -- segment you just finished
+		local nextSeg = (clearedWave // WAVE_CHECKPOINT_INTERVAL)        -- segment you’re entering (after this clear)
 
 		-- Blessing expires when leaving prevSeg (i.e. after boss/segment complete)
-		local blessSeg = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -999
-		if blessSeg ~= nextSeg then
-			-- entering a segment where blessing wasn't bought => clear
+		-- Blessing expires only when we ENTER a new segment (after clearing 5/10/15...)
+		if nextSeg ~= prevSeg then
 			plot:SetAttribute("BlessingElem", nil)
 		end
+
+		-- keep the seg id in sync for VFX checks (current segment index)
 		plot:SetAttribute("BlessingExpiresSegId", nextSeg)
 	end
 end
@@ -1856,10 +1871,41 @@ local function runFightLoop(plot, portal, owner, opts)
 				cleanupLeftovers_local()
 				-- wipe run blessings on death
 				local owner = plotToPlayer[plot]
+
+				-- preserve player's chosen style across resets/spawns
+				local savedMain = owner and owner:GetAttribute("WeaponMain")
+				local savedOff  = owner and owner:GetAttribute("WeaponOff")
+
 				pcall(function() Forge:Reset(owner, plot) end)
 
-				-- Per new plan: show the Forge after a defeat so players can choose to spend Flux.
-				Forge:SpawnElementalForge(plot)
+				-- restore style if Forge reset touched it
+				if owner then
+					if savedMain ~= nil then owner:SetAttribute("WeaponMain", savedMain) end
+					if savedOff  ~= nil then owner:SetAttribute("WeaponOff",  savedOff)  end
+				end
+
+				-- (optional) re-apply to hero visuals immediately while idle
+				do
+					local h = getHero(plot)
+					if h and owner and mirrorPlayerSkillsToHero then
+						mirrorPlayerSkillsToHero(plot, h, owner.UserId)
+					end
+				end
+
+				-- Spawn forge only if you want it, but DO NOT allow it to change style
+				local w = tonumber(plot:GetAttribute("CurrentWave")) or 1
+				if w > 1 then
+					local savedMain2 = owner and owner:GetAttribute("WeaponMain")
+					local savedOff2  = owner and owner:GetAttribute("WeaponOff")
+
+					Forge:SpawnElementalForge(plot)
+
+					if owner then
+						if savedMain2 ~= nil then owner:SetAttribute("WeaponMain", savedMain2) end
+						if savedOff2  ~= nil then owner:SetAttribute("WeaponOff",  savedOff2)  end
+					end
+				end
+
 
 				task.delay(0.25, function()
 					local h2 = getHero(plot); if not h2 then return end
@@ -2240,6 +2286,27 @@ local function releasePlot(plot)
 		if m:GetAttribute("OwnerUserId") == ownerId and m.Parent then m:Destroy() end
 	end
 	plot:SetAttribute("OwnerUserId", 0)
+	-- hard reset run state so the next claimant starts clean
+	plot:SetAttribute("CurrentWave", 1)
+	plot:SetAttribute("MaxClearedWave", 0)
+	plot:SetAttribute("FullHealOnNextStart", false)
+	plot:SetAttribute("OpenForgeOnNextStart", false)
+
+	plot:SetAttribute("CombatLocked", true)      -- safe default for idle plots
+	plot:SetAttribute("WaveStarting", false)     -- make ForgeVFX stop “vanish mode”
+	plot:SetAttribute("AtIdle", true)
+
+	plot:SetAttribute("ForgeUnlocked", false)
+	plot:SetAttribute("BlessingElem", nil)
+	plot:SetAttribute("BlessingExpiresSegId", -999)
+
+	plot:SetAttribute("CoreId", nil)
+	plot:SetAttribute("CoreTier", 0)
+	plot:SetAttribute("CoreName", nil)
+
+	-- if a forge model exists, remove it
+	local ef = plot:FindFirstChild("ElementalForge")
+	if ef then ef:Destroy() end
 	setVacantVisual(plot, true); clearPortalPrompt(plot); setSignpost(plot, nil); destroyHero(plot)
 	local p = plotToPlayer[plot]; if p then playerToPlot[p] = nil end
 	plotToPlayer[plot] = nil; fightBusy[plot] = nil; lastTriggered[plot] = nil

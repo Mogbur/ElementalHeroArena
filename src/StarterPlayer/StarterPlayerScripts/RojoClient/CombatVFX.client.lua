@@ -2,6 +2,12 @@ local RS = game:GetService("ReplicatedStorage")
 local Tween = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 local Run = game:GetService("RunService")
+-- ---------- SINGLETON (prevents duplicate LocalScripts) ----------
+if _G.__COMBATVFX_RUNNING then
+	warn("[CombatVFX] duplicate client script; ignoring this copy")
+	return
+end
+_G.__COMBATVFX_RUNNING = true
 local Remotes = RS:WaitForChild("Remotes")
 local RE = Remotes:WaitForChild("CombatVFX")
 
@@ -177,15 +183,27 @@ local function ringPulse(pos, radius)
     Debris:AddItem(ring, 0.3)
 end
 
+local function surgeImpact(pos)
+	-- small spark burst at impact + heavier sound (enemy-side)
+	blockSpark(pos)                 -- reuse your nice spark burst
+	playAt(SFX.bow_surge, pos, 1.0) -- play at ENEMY impact, not shooter
+end
+
 RE.OnClientEvent:Connect(function(payload)
     if typeof(payload) ~= "table" then return end
     local kind = payload.kind
+
+     -- --- NEW: bow surge impact (spawned at enemy hit point) ---
+    if kind == "bow_surge_hit" and payload.pos then
+        surgeImpact(payload.pos)
+        return
+    end
 
     -- --- bow tracer (new unified name) ---
     if kind == "bow_shot" and payload.from and payload.to then
         local surge = payload.surge == true
         bowTracer(payload.from, payload.to, surge)
-        playAt(surge and SFX.bow_surge or SFX.bow_shot, payload.from, surge and 1.0 or 0.7)
+        playAt(SFX.bow_shot, payload.from, 0.7)
         return
     end
 

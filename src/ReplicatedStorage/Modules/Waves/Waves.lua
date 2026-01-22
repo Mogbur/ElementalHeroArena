@@ -7,7 +7,6 @@ local Waves = {
   COUNT_EVERY  = 2,
   MAX_COUNT    = 6,
   REWARD_MONEY = 10,
-  REWARD_SEEDS = 1,
 }
 
 function Waves.get(waveIndex: number)
@@ -18,7 +17,6 @@ function Waves.get(waveIndex: number)
     index = waveIndex, count = count,
     healthMul = healthM, damageMul = dmgM,
     rewardMoney = Waves.REWARD_MONEY * waveIndex,
-    rewardSeeds = Waves.REWARD_SEEDS,
   }
 end
 

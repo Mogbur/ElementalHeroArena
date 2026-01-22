@@ -369,29 +369,12 @@ local function castQuakePulse(plr, lv, hero, plot)
 	end)
 end
 
-RE_Cast.OnServerEvent:Connect(function(plr, payload)
-	if typeof(payload) ~= "table" then return end
-
-	local hero, plot = getHero(plr); if not hero then return end
-	local hum = hero:FindFirstChildOfClass("Humanoid")
-	if not (hum and hum.Health > 0) then return end
-	if plot and plot:GetAttribute("CombatLocked") then return end
-
-	local which = norm(payload.kind or payload.id); if not which then return end
-	local equipped = norm(plr:GetAttribute("Equip_Primary"))
-	if not equipped or which ~= equipped then return end
-
-	local lv = tonumber(plr:GetAttribute("Skill_" .. which)) or 0
-	if lv <= 0 then return end
-
-	if which == "firebolt" then
-		castFirebolt(plr, lv, hero, plot)
-	elseif which == "aquabarrier" then
-		castAquaBarrier(plr, lv, hero, plot)
-	elseif which == "quakepulse" then
-		castQuakePulse(plr, lv, hero, plot)
-	end
+RE_Cast.OnServerEvent:Connect(function(_plr, _payload)
+	-- Autobattler mode: skills are cast by HeroBrain (server AI).
+	-- This handler is intentionally disabled to prevent double-casting.
+	return
 end)
+
 
 print(("[SkillCast] online. FIRE_RANGE=%d QUAKE_RANGE=%d AQUA_DUR=%d")
 	:format(T.FIRE_RANGE, T.QUAKE_RANGE, T.AQUA_DURATION))

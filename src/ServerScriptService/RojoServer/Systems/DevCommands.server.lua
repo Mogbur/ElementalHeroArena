@@ -146,16 +146,5 @@ Players.PlayerAdded:Connect(function(plr)
 	plr.Chatted:Connect(function(m) handle(plr, m) end)
 end)
 
--- New TextChatService
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	TextChatService.OnIncomingMessage = function(message: TextChatMessage)
-		local src = message.TextSource
-		if src then
-			local plr = Players:GetPlayerByUserId(src.UserId)
-			if plr then handle(plr, message.Text) end
-		end
-		return nil -- keep normal chat behavior
-	end
-end
 
 print("[DevCommands] Ready: !resetme | !resetme minimal | !setlevel <n> | !giveflux <n>")

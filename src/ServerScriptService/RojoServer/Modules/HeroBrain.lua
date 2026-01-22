@@ -16,8 +16,13 @@ local T       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("
 local DamageNumbers = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("DamageNumbers"))
 local SSS = game:GetService("ServerScriptService")
 local Combat do
-    local ok, mod = pcall(function() return require(SSS.RojoServer.Modules.Combat) end)
-    Combat = ok and mod or require(SSS.Modules.Combat)
+	local rs = SSS:FindFirstChild("RojoServer")
+	local mods = rs and rs:FindFirstChild("Modules")
+	local c = mods and mods:FindFirstChild("Combat")
+	if not c then
+		error("[HeroBrain] Combat module not found at ServerScriptService/RojoServer/Modules/Combat")
+	end
+	Combat = require(c)
 end
 
 -- Optional VFX bus
@@ -349,12 +354,11 @@ function Brain.attach(hero: Model)
 
 		-- melee base damage from style (your old logic)
 		local baseMelee = 15
-		MELEE_DAMAGE = math.floor(baseMelee * (S.atkMul or 1.0) + 0.5)
+		MELEE_DAMAGE = 15
 
 		-- Basic swing cadence = base / (style * core(Haste))
 		local baseSwing = 0.60
 		SWING_COOLDOWN = baseSwing / math.max(0.2, (S.spdMul or 1.0) * coreSpdMul)
-		bowSwingCount = 0
 	end
 
 	applyStyle()
@@ -481,11 +485,12 @@ function Brain.attach(hero: Model)
 	local function getBlessElem()
 		local plot = findPlot(); if not plot then return nil end
 		local elemRaw = plot:GetAttribute("BlessingElem")
-		local elem = tostring(elemRaw or ""):lower() -- normalize
-		local expires = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -1
-		if (elem == "fire" or elem == "water" or elem == "earth")
-			and (expires < 0 or currentSegId(plot) <= expires) then
-			return elem -- return lowercase token
+		local elem = tostring(elemRaw or ""):lower()
+		local segNow  = currentSegId(plot)
+		local expSeg  = tonumber(plot:GetAttribute("BlessingExpiresSegId")) or -999
+
+		if (elem == "fire" or elem == "water" or elem == "earth") and (expSeg == segNow) then
+			return elem
 		end
 		return nil
 	end
@@ -504,38 +509,33 @@ function Brain.attach(hero: Model)
 	local function applyDamage(target: Instance, amount: number, color: Color3?, allowCrit: boolean?, opts)
 		if not target or amount <= 0 then return 0, false end
 		opts = opts or {}
-		local isCrit = false
-		local dealt  = amount
-
-		-- normal crits unless disabled (this is your generic crit system)
-		if allowCrit ~= false then
-			local chance, mult = getCritParams()
-			if (opts.forceCrit) or (math.random() < chance) then
-				dealt = dealt * mult
-				isCrit = true
-			end
-		end
 
 		-- never hit yourself
 		if target:IsDescendantOf(hero) then return 0, false end
 
-		-- route through Combat (pass isBasic from opts)
+		-- IMPORTANT:
+		--  - Do NOT roll crit here (Combat is the single authority).
+		--  - Pass base damage as-is.
+		--  - Pass isBasic so Combat can apply style/crit rules correctly.
 		local ownerPlr = Players:GetPlayerByUserId(hero:GetAttribute("OwnerUserId") or 0)
-		local _, applied = Combat.ApplyDamage(ownerPlr, target, dealt, nil, opts.isBasic == true)
+		local _, applied = Combat.ApplyDamage(ownerPlr, target, amount, nil, opts.isBasic == true)
 
 		-- damage numbers show what actually applied (after DR/shields/etc.)
 		local m  = target:IsA("Model") and target or target:FindFirstAncestorOfClass("Model")
 		local pp = (m and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart))
 			or (target:IsA("BasePart") and target)
+
 		if pp and applied and applied > 0 then
 			local shown = math.floor(applied + 0.5)
-			if isCrit or (opts and opts.displayCrit) then
+			-- NOTE: we no longer know "real crit" here; displayCrit is used for Bow surge visuals.
+			if opts and opts.displayCrit then
 				DamageNumbers.pop(pp, shown, Color3.fromRGB(255,90,90), {duration=1.35, rise=10, sizeMul=1.35})
 			else
 				DamageNumbers.pop(pp, shown, color or Color3.fromRGB(255,235,130))
 			end
 		end
-		return applied or 0, isCrit
+
+		return applied or 0, false
 	end
 
 	local function applyHeal(model: Instance, amount: number)
@@ -817,8 +817,8 @@ function Brain.attach(hero: Model)
 		end
 	end
 
-	local bowSwingCount = 0
 	local lastStunAt = {} -- [Instance] = time()
+	local bowSwingCount = 0 -- VFX-only counter (damage is handled in Combat)
 
 	local function tryMelee(target: Instance): boolean
 		-- Resolve target position early; bail if we somehow lost it.
@@ -840,21 +840,18 @@ function Brain.attach(hero: Model)
 			-- face, mark a swing tick (helps anims/IK), then fire a projectile
 			faceTowards(hrp, p)
 			hero:SetAttribute("MeleeTick", os.clock())
-
-			-- every Nth shot we flag a visual “surge” (red number); damage bonus is in Combat
-			local surge = false
-			if S.forcedCritNth and S.forcedCritNth > 0 then
-				bowSwingCount += 1
-				surge = (bowSwingCount % S.forcedCritNth) == 0
-			end
+			-- VFX-only surge cadence (damage surge is in Combat)
+			bowSwingCount += 1
+			local isSurge = (bowSwingCount % 6) == 0
 
 			-- simple projectile to the target point
 			local from = hrp.Position + Vector3.new(0, 2, 0)
 			local dir  = (p - from).Unit
 
 			-- Send bow tracer (every shot). Surge just tweaks visuals & sound client-side.
+			-- no surge on the shooter; surge will be spawned at the enemy impact when the hit lands
 			if RE_CVFX then
-				RE_CVFX:FireAllClients({ kind = "bow_shot", from = from, to = p, surge = surge })
+				RE_CVFX:FireAllClients({ kind = "bow_shot", from = from, to = p, surge = false })
 			end
 
 			local bolt = Instance.new("Part")
@@ -872,13 +869,16 @@ function Brain.attach(hero: Model)
 					bolt.CFrame = bolt.CFrame + dir * speed * task.wait()
 				end
 				bolt:Destroy()
+				-- Surge VFX on the ENEMY impact (NOT on shooter)
+				if isSurge and RE_CVFX then
+					RE_CVFX:FireAllClients({ kind = "bow_surge_hit", pos = p })
+				end
 
 				-- IMPORTANT:
 				--  - mark this as a BASIC hit so Combat applies Bow cadence/bonus.
 				--  - no pre-mult for surge; pass displayCrit just for red numbers.
 				applyDamage(target, MELEE_DAMAGE, Color3.fromRGB(255,235,130), false, {
-					isBasic     = true,
-					displayCrit = surge,
+					isBasic = true
 				})
 			end)
 			return true
@@ -918,7 +918,6 @@ function Brain.attach(hero: Model)
 		if hero:GetAttribute("BarsVisible") == 1 then
 			resetAllCooldowns()
 			applyStyle()
-			bowSwingCount = 0
 		end
 	end))
 

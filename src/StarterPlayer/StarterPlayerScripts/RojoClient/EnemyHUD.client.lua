@@ -166,6 +166,8 @@ local function ensureDebuffGui(enemy: Instance)
 end
 
 -- Update / create stun icon for an enemy; returns nil if no stun
+-- forward declare (updateStunDebuff calls this)
+local disableEffectEmitter
 local function updateStunDebuff(enemy: Instance)
 	local untilT = tonumber(enemy:GetAttribute("StunnedUntil")) or 0
 	local dur    = tonumber(enemy:GetAttribute("StunDuration")) or 0
@@ -305,7 +307,7 @@ local function ensureTorchFire(enemy: Instance)
     em.Enabled = true
 end
 
-local function disableEffectEmitter(enemy: Instance, key: string)
+disableEffectEmitter = function(enemy: Instance, key: string)
     local att = enemy:FindFirstChild("FX_"..key, true)  -- recursive search
     if att and att:IsA("Attachment") then
         for _, child in ipairs(att:GetChildren()) do

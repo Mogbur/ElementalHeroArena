@@ -416,11 +416,16 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 	local plot = plotOf(Forge)
 
 	prompt.Triggered:Connect(function(player)
+		-- owner-only
+		if not plot then return end
+		local ownerId = plot:GetAttribute("OwnerUserId") or 0
+		if ownerId ~= 0 and player.UserId ~= ownerId then return end
+
 		local open = Remotes:FindFirstChild("OpenForgeUI") or Remotes:WaitForChild("OpenForgeUI", 5)
-		if open and plot then
+		if open then
 			open:FireClient(player, plot)
 		else
-			warn("[ForgeVFX] Can't open forge UI (missing RemoteEvent or plot).")
+			warn("[ForgeVFX] Can't open forge UI (missing OpenForgeUI RemoteEvent).")
 		end
 	end)
 
@@ -435,7 +440,9 @@ local function setupForge(Forge) -- Forge is a Model named "ElementalForge"
 		local locked       = (plot:GetAttribute("CombatLocked") == true)
 
 		-- Visible only when we're at the checkpoint AND not already starting the wave
-		if locked and not waveStarting then
+		local unlocked = (plot:GetAttribute("ForgeUnlocked") == true)
+		
+		if unlocked and locked and not waveStarting then
 			showForgeFancy(Forge, 1.2)
 		else
 			hideForgeFancy(Forge, 3.0)
