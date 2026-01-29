@@ -96,12 +96,38 @@ local plots = workspace:FindFirstChild("Plots")
 local function configurePlot(plot)
 	if not plot then return end
 
-	-- ground pieces (add/adjust names to match your map)
+	-- ground pieces (parts OR models)
 	for _,name in ipairs({"Sand","PlotGround","ArenaFloor","HeroSpawn"}) do
-		local p = plot:FindFirstChild(name, true)
-		if p and p:IsA("BasePart") then
-			setPartGroup(p, "ArenaGround")
-			p.CanTouch = false
+		local inst = plot:FindFirstChild(name, true)
+		if inst then
+			if inst:IsA("BasePart") then
+			setPartGroup(inst, "ArenaGround")
+			inst.CanTouch = false
+			inst.CanCollide = true
+			inst.CanQuery = true  -- ✅ IMPORTANT (raycasts)
+
+			elseif inst:IsA("Model") then
+				-- PlotGround model: MOST parts are ArenaGround,
+				-- but SpawnVol_* / SpawnPoint_* must stay non-colliding Effects.
+				for _, d in ipairs(inst:GetDescendants()) do
+					if d:IsA("BasePart") then
+						local n = d.Name:lower()
+
+						if n:find("spawnvol") or n:find("spawnpoint") then
+							-- IMPORTANT: keep spawners non-physical
+							setPartGroup(d, "Effects")
+							d.CanCollide = false
+							d.CanTouch   = false
+							d.CanQuery   = false
+						else
+							setPartGroup(d, "ArenaGround")
+							d.CanCollide = true
+							d.CanTouch   = false
+							d.CanQuery   = true
+						end
+					end
+				end
+			end
 		end
 	end
 
@@ -110,20 +136,23 @@ local function configurePlot(plot)
 	if anchor and anchor:IsA("BasePart") then
 		setPartGroup(anchor, "Effects")
 		anchor.CanTouch = false
-		-- keep CanCollide = false (as you have it)
+		anchor.CanCollide = false
+		anchor.CanQuery = false      -- ✅ IMPORTANT: raycasts must NOT hit this
 	end
 
 	-- portal arches/pillars: mark as ArenaProps
 	local portalModel = plot:FindFirstChild("Portal", true)
 	if portalModel and portalModel:IsA("Model") then
 		setModelGroup(portalModel, "ArenaProps")
-		for _,d in ipairs(portalModel:GetDescendants()) do
+		for _, d in ipairs(portalModel:GetDescendants()) do
 			if d:IsA("BasePart") then
-				-- black hole / VFX spheres should not collide at all
+				d.CanTouch = false
+				d.CanQuery = false -- ✅ IMPORTANT: don't let portal become an invisible nav/raycast wall
+
+				-- VFX spheres etc should not collide either
 				local n = d.Name:lower()
 				if n:find("blackhole") or n:find("fx") then
 					d.CanCollide = false
-					d.CanTouch   = false
 				end
 			end
 		end
@@ -146,12 +175,38 @@ if plots then
 	end
 	plots.DescendantAdded:Connect(function(d)
 		if not d:IsA("BasePart") then return end
+
+		-- If the part is inside PlotGround model:
+		--  - SpawnVol_* / SpawnPoint_* must be non-colliding Effects
+		--  - everything else can be ArenaGround
+		local pg = d:FindFirstAncestor("PlotGround")
+		if pg then
+			local n = d.Name:lower()
+			if n:find("spawnvol") or n:find("spawnpoint") then
+				setPartGroup(d, "Effects")
+				d.CanCollide = false
+				d.CanTouch   = false
+				d.CanQuery   = false
+			else
+				setPartGroup(d, "ArenaGround")
+				d.CanCollide = true
+				d.CanTouch   = false
+				d.CanQuery   = true
+			end
+			return
+		end
+
 		if d.Name == "Sand" or d.Name == "PlotGround" or d.Name == "ArenaFloor" or d.Name == "HeroSpawn" then
-			setPartGroup(d, "ArenaGround"); d.CanTouch = false
+			setPartGroup(d, "ArenaGround")
+			d.CanTouch = false
+			d.CanCollide = true
+			d.CanQuery = true  -- ✅ IMPORTANT
 		elseif d.Name == "07_HeroArenaAnchor" then
 			setPartGroup(d, "Effects"); d.CanTouch = false
-		elseif d.Parent and d.Parent:IsA("Model") and d.Parent.Name == "Portal" then
+		elseif d:FindFirstAncestor("Portal") then
 			setPartGroup(d, "ArenaProps")
+			d.CanTouch = false
+			d.CanQuery = false
 		end
 	end)
 end

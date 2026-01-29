@@ -60,6 +60,21 @@ end
 -- Elements cycle order for Blessing
 local ELEMENTS = {"Fire", "Water", "Earth"}
 
+local function groundSnap(pos: Vector3, ignore: {Instance}?)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = ignore or {}
+
+	local origin = pos + Vector3.new(0, 120, 0)
+	local dir    = Vector3.new(0, -400, 0)
+
+	local hit = workspace:Raycast(origin, dir, rp)
+	if hit then
+		return hit.Position
+	end
+	return pos
+end
+
 local function getFlux(plr: Player): number
 	-- Your PlayerData has d.Flux mirrored to attribute too, but PlayerData is the source of truth.
 	local d = PlayerData.Get(plr)
@@ -99,20 +114,6 @@ function Forge:GetRun(plr)
 		vipFreeLeft = false,
 	}
 	return Run[plr]
-end
-
--- Returns vertical offset from model pivot to its true bottom face
-local function pivotToBottomOffset(model: Model)
-	local pivotY = model:GetPivot().Position.Y
-	local bottom: BasePart? = model:FindFirstChild("BottomPlate", true)
-	if bottom and bottom:IsA("BasePart") then
-		local bottomY = bottom.Position.Y - (bottom.Size.Y * 0.5)
-		return pivotY - bottomY
-	end
-	-- fallback: bounding box
-	local cf, size = model:GetBoundingBox()
-	local bottomY = cf.Position.Y - (size.Y * 0.5)
-	return pivotY - bottomY
 end
 
 -- ===== Offers =====
@@ -344,21 +345,112 @@ local function findAnchorInPlot(plot)
 	return anchor
 end
 
-local function snapForgeToGround(m: Model)
-	if not m or not m.Parent then return end
-	local rp = RaycastParams.new()
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.FilterDescendantsInstances = { m }  -- ignore only the forge, not the whole plot
+local function collectGroundParts(plot: Model)
+	local list = {}
 
-	local start = m:GetPivot().Position + Vector3.new(0, 200, 0)
+	-- IMPORTANT: scan the whole plot, because PlotGround is a sibling of Arena
+	for _, d in ipairs(plot:GetDescendants()) do
+		if d:IsA("BasePart") and d.CanQuery then
+			-- Best: collision group "ArenaGround"
+			if d.CollisionGroup == "ArenaGround" then
+				table.insert(list, d)
+			else
+				-- Fallback naming (if you haven’t set ArenaGround everywhere)
+				local n = d.Name:lower()
+				if n:find("ground") or n:find("floor") or n:find("plotground") or n:find("sand") or n:find("baseplate") then
+					table.insert(list, d)
+				end
+			end
+		end
+	end
+
+	-- Only include Terrain if we found NOTHING in the plot (safety fallback)
+	if #list == 0 and workspace:FindFirstChildOfClass("Terrain") then
+		table.insert(list, workspace.Terrain)
+	end
+
+	return list
+end
+
+-- True world min-Y of an oriented box (Part or OBB)
+local function partMinWorldY(p: BasePart): number
+	local cf = p.CFrame
+	local sx, sy, sz = p.Size.X, p.Size.Y, p.Size.Z
+
+	-- project half-extents onto world Y axis
+	local halfY =
+		0.5 * (
+			math.abs(cf.RightVector.Y) * sx +
+			math.abs(cf.UpVector.Y)    * sy +
+			math.abs(cf.LookVector.Y)  * sz
+		)
+
+	return p.Position.Y - halfY
+end
+
+local function obbMinWorldY(cf: CFrame, size: Vector3): number
+	local sx, sy, sz = size.X, size.Y, size.Z
+	local halfY =
+		0.5 * (
+			math.abs(cf.RightVector.Y) * sx +
+			math.abs(cf.UpVector.Y)    * sy +
+			math.abs(cf.LookVector.Y)  * sz
+		)
+
+	return cf.Position.Y - halfY
+end
+
+-- Returns the world Y of the model's true bottom face
+local function modelBottomWorldY(m: Model): number?
+	local bottom = m:FindFirstChild("BottomPlate", true)
+	if bottom and bottom:IsA("BasePart") then
+		return partMinWorldY(bottom)
+	end
+
+	-- fallback: oriented bounding box
+	local cf, size = m:GetBoundingBox()
+	return obbMinWorldY(cf, size)
+end
+
+local function snapForgeToGround(plot: Model, m: Model, startPos: Vector3?)
+	if not (plot and m and m.Parent) then return end
+
+	local rp = RaycastParams.new()
+	local grounds = collectGroundParts(plot)
+
+	if #grounds > 0 then
+		rp.FilterType = Enum.RaycastFilterType.Include
+		rp.FilterDescendantsInstances = grounds
+	else
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = { m }
+	end
+
+	local origin = startPos or m:GetPivot().Position
+	local start = origin + Vector3.new(0, 200, 0)
+
 	local hit = workspace:Raycast(start, Vector3.new(0, -1200, 0), rp)
 	if not hit then return end
 
-	local off = pivotToBottomOffset(m)
-	local pv  = m:GetPivot()
-	local targetY = hit.Position.Y + off + 0.05
-	m:PivotTo(CFrame.new(pv.X, targetY, pv.Z) * CFrame.Angles(pv:ToOrientation()))
+	print("[ForgeSnap] hit=", hit.Instance:GetFullName(),
+		"Y=", hit.Position.Y,
+		"CanQuery=", hit.Instance.CanQuery,
+		"CG=", hit.Instance.CollisionGroup)
+
+
+	local bottomY = modelBottomWorldY(m)
+	if not bottomY then return end
+
+	local epsilon = 0.05 -- tiny lift so it never z-fights the sand
+	local desiredBottomY = hit.Position.Y + epsilon
+
+	local deltaY = desiredBottomY - bottomY
+	if math.abs(deltaY) < 1e-4 then return end
+
+	local pv = m:GetPivot()
+	m:PivotTo(pv + Vector3.new(0, deltaY, 0))
 end
+
 
 function Forge:SpawnElementalForge(plot: Model)
 	-- already present?
@@ -392,10 +484,30 @@ function Forge:SpawnElementalForge(plot: Model)
 	local m = tpl:Clone()
 	m.Name = "ElementalForge"
 	m.Parent = plot
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = true
+			d.CanCollide = false
+			d.CanTouch = false
+			-- optional: keep groups tidy (doesn't affect snapping)
+			-- d.CollisionGroup = "ArenaProps"
+		end
+	end
 
 	local yaw = select(2, anchor.CFrame:ToOrientation())
-	m:PivotTo(CFrame.new(anchor.Position + Vector3.new(0, 50, 0)) * CFrame.Angles(0, yaw, 0))
-	snapForgeToGround(m)
+
+	-- Start roughly at anchor XZ (no +50), keep yaw
+	m:PivotTo(CFrame.new(anchor.Position) * CFrame.Angles(0, yaw, 0))
+
+	-- Snap to ground using the anchor position
+	snapForgeToGround(plot, m, anchor.Position)
+
+	-- Optional: a second settle pass (helps if parts stream/assemble a frame late)
+	task.delay(0.05, function()
+		if m and m.Parent then
+			snapForgeToGround(plot, m, anchor.Position)
+		end
+	end)
 
 	plot:SetAttribute("ForgeUnlocked", true)
 	ShrineByPlot[plot] = m

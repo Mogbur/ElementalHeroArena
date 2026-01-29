@@ -76,6 +76,8 @@ function Brain.attach(enemy: Model, ctx)
 	local TICK     = 0.15
 	local COOLDOWN = 0.8
 	local lastAtk  = 0
+	local lastPos = hrp.Position
+	local stuckT = 0
 
 	local function stopPoint(fromPos, heroPos)
 		local dir = (heroPos - fromPos); local d = dir.Magnitude
@@ -98,8 +100,29 @@ function Brain.attach(enemy: Model, ctx)
 			local hero, hh, hr = findHero(OWNER)
 			if not hero then continue end
 
-
 			local dist = (hr.Position - hrp.Position).Magnitude
+			local moved = (hrp.Position - lastPos).Magnitude
+			lastPos = hrp.Position
+
+			-- ==== STUCK DETECTOR (only when trying to walk) ====
+			if dist > ATK_RANGE + 2 then
+				if moved < 0.05 then
+					stuckT += TICK
+				else
+					stuckT = 0
+				end
+
+				if stuckT > 1.0 then
+					warn("[EnemyBrain] STUCK", enemy.Name, "pos=", hrp.Position, "dist=", dist)
+					local dir = (hr.Position - hrp.Position)
+					if dir.Magnitude > 1 then
+						hrp.CFrame = hrp.CFrame + dir.Unit * 2 + Vector3.new(0, 0.5, 0)
+					end
+					stuckT = 0
+				end
+			end
+
+			-- ==== CORE AI (MOVE / ATTACK) ====
 			if dist > ATK_RANGE then
 				hum:MoveTo(stopPoint(hrp.Position, hr.Position))
 			else
@@ -107,7 +130,7 @@ function Brain.attach(enemy: Model, ctx)
 				local now = os.clock()
 				if (now - lastAtk) >= COOLDOWN then
 					lastAtk = now
-					Combat.ApplyDamage(nil, hero, BASE_DMG, enemy:GetAttribute("Element"))
+					Combat.ApplyDamage(nil, hero, BASE_DMG, enemy:GetAttribute("Element"), true) -- ✅ isBasic=true
 				end
 			end
 		end

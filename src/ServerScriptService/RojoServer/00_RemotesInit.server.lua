@@ -1,3 +1,4 @@
+-- 00_RemotesInit.server.lua  (place in ServerScriptService/RojoServer)
 local RS = game:GetService("ReplicatedStorage")
 local SS = game:GetService("ServerStorage")
 local SSS = game:GetService("ServerScriptService")

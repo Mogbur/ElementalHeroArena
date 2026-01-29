@@ -1,13 +1,14 @@
 local RS = game:GetService("ReplicatedStorage")
+-- ---------- SINGLETON (prevents duplicate LocalScripts) ----------
+if _G.__COMBATVFX_RUNNING then
+	warn("[CombatVFX] duplicate client script; ignoring this copy:", script:GetFullName())
+	return
+end
+print("[CombatVFX] boot:", script:GetFullName())
+_G.__COMBATVFX_RUNNING = true
 local Tween = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 local Run = game:GetService("RunService")
--- ---------- SINGLETON (prevents duplicate LocalScripts) ----------
-if _G.__COMBATVFX_RUNNING then
-	warn("[CombatVFX] duplicate client script; ignoring this copy")
-	return
-end
-_G.__COMBATVFX_RUNNING = true
 local Remotes = RS:WaitForChild("Remotes")
 local RE = Remotes:WaitForChild("CombatVFX")
 
@@ -190,28 +191,39 @@ local function surgeImpact(pos)
 end
 
 RE.OnClientEvent:Connect(function(payload)
-    if typeof(payload) ~= "table" then return end
-    local kind = payload.kind
-
-     -- --- NEW: bow surge impact (spawned at enemy hit point) ---
-    if kind == "bow_surge_hit" and payload.pos then
-        surgeImpact(payload.pos)
-        return
+	if typeof(payload) ~= "table" then return end
+	local kind = payload.kind
+    if kind == "bow_shot" then
+        print("[CVFX] bow_shot from=", payload.from, "to=", payload.to, "surge=", payload.surge)
+    elseif kind == "bow_surge_hit" then
+        print("[CVFX] bow_surge_hit pos=", payload.pos)
+    elseif kind == "bow_surge_shot" then
+        print("[CVFX] bow_surge_shot from=", payload.from, "to=", payload.to)
     end
 
-    -- --- bow tracer (new unified name) ---
-    if kind == "bow_shot" and payload.from and payload.to then
-        local surge = payload.surge == true
-        bowTracer(payload.from, payload.to, surge)
-        playAt(SFX.bow_shot, payload.from, 0.7)
-        return
-    end
+	-- --- Bow surge impact (enemy-side) ---
+	if kind == "bow_surge_hit" and payload.pos then
+		surgeImpact(payload.pos)
+		return
+	end
 
-    -- (back-compat) older name you had:
+	-- --- Bow tracer (from shooter -> target) ---
+	if kind == "bow_shot" and payload.from and payload.to then
+		local surge = payload.surge == true
+
+		-- tracer visuals (you can keep surge affecting the beam visuals if you like)
+		bowTracer(payload.from, payload.to, false) -- never surge-styled on shooter
+
+		-- ALWAYS play the normal bow shot at the shooter
+		playAt(SFX.bow_shot, payload.from, 0.7)
+        
+		return
+	end
+
+
     if kind == "bow_surge_shot" and payload.from and payload.to then
-        -- simple line for older events
         quickBeam(payload.from, payload.to)
-        playAt(SFX.bow_surge, payload.from, 0.95)
+        surgeImpact(payload.to) -- ✅ impact + heavy sound at TARGET
         return
     end
 

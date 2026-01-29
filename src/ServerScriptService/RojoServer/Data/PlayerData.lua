@@ -64,8 +64,14 @@ local function mirrorToLeaderstats(plr, d)
   plr:SetAttribute("StyleXP_SwordShield", d.Mastery.SwordShield or 0)
   plr:SetAttribute("StyleXP_Bow",         d.Mastery.Bow or 0)
   plr:SetAttribute("StyleXP_Mace",        d.Mastery.Mace or 0)
-  plr:SetAttribute("WeaponMain", d.WeaponMain or "Sword")
-  plr:SetAttribute("WeaponOff",  d.WeaponOff  or "Shield")
+  -- Don't clobber live style choices set by WeaponStands / PlayerStyleStore.
+  -- Only set defaults if the attributes don't exist yet.
+  if plr:GetAttribute("WeaponMain") == nil then
+    plr:SetAttribute("WeaponMain", d.WeaponMain or "Sword")
+  end
+  if plr:GetAttribute("WeaponOff") == nil then
+    plr:SetAttribute("WeaponOff", d.WeaponOff or "Shield")
+  end
   plr:SetAttribute("Level",      d.Level or 1)
   plr:SetAttribute("Flux",       d.Flux or 0)
   plr:SetAttribute("Essence_Fire",   (d.Essence and d.Essence.Fire)   or 0)

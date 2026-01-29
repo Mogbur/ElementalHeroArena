@@ -1,3 +1,4 @@
+-- ForgeHUD.client.lua  (place in StarterPlayer/StarterPlayerScripts/RojoClient)
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 local Remotes = RS:WaitForChild("Remotes")

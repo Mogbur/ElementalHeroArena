@@ -168,6 +168,7 @@ end
 -- Update / create stun icon for an enemy; returns nil if no stun
 -- forward declare (updateStunDebuff calls this)
 local disableEffectEmitter
+local ensureEffectEmitter
 local function updateStunDebuff(enemy: Instance)
 	local untilT = tonumber(enemy:GetAttribute("StunnedUntil")) or 0
 	local dur    = tonumber(enemy:GetAttribute("StunDuration")) or 0
@@ -213,7 +214,7 @@ local function updateStunDebuff(enemy: Instance)
 end
 
 
-local function ensureEffectEmitter(enemy: Instance, key: string, textureId: string, color: Color3)
+ensureEffectEmitter = function(enemy: Instance, key: string, textureId: string, color: Color3)
     -- returns the emitter (creates if missing), or nil if textureId==0
     if textureId == "rbxassetid://0" then return nil end
     local root = modelPrimaryPart(enemy); if not root then return nil end

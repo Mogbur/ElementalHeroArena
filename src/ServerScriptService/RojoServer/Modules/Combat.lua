@@ -59,13 +59,21 @@ end
 
 local function heroModelForPlayer(plr: Player)
 	if not plr then return nil end
+
 	local plot = plotByOwner(plr.UserId)
 	if plot then
 		local hero = plot:FindFirstChild("Hero", true)
 		if hero and hero:IsA("Model") then
+			-- OPTIONAL DEBUG:
+			print("[Combat] heroModelForPlayer ->", plr.Name, "HERO:", hero:GetFullName(),
+			      "fallbackChar=", plr.Character and plr.Character:GetFullName())
 			return hero
 		end
 	end
+
+	-- OPTIONAL DEBUG:
+	print("[Combat] heroModelForPlayer ->", plr.Name, "HERO: nil",
+	      "fallbackChar=", plr.Character and plr.Character:GetFullName())
 	return plr.Character
 end
 
@@ -120,6 +128,9 @@ end
 -- === Style runtime (tiny, local) ===
 local bowCount = setmetatable({}, {__mode="k"})     -- [Player] = int
 local guardT   = setmetatable({}, {__mode="k"})     -- [Player] = os.clock()
+
+-- Bow surge VFX debounce (prevents double-fire if ApplyDamage gets called twice)
+local lastSurgeFxAt = setmetatable({}, { __mode = "k" }) -- [Model] = os.clock()
 
 local function styleIdFor(plr: Player)
 	local main = (plr:GetAttribute("WeaponMain") or "Sword"):lower()
@@ -245,9 +256,11 @@ local function incomingFromStyle(targetPlayer: Player, damage: number)
 			-- VFX: spark when the guard is consumed
 			local Remotes = RS:WaitForChild("Remotes")
 			local RE = Remotes:FindFirstChild("CombatVFX")
-			local whoModel = heroModelForPlayer(targetPlayer)
-			if RE and whoModel then
-				RE:FireAllClients({ kind = "shield_block", who = whoModel })
+			if RE and targetPlayer then
+				local whoModel = heroModelForPlayer(targetPlayer) -- should be plot hero
+				if whoModel then
+					RE:FireAllClients({ kind = "shield_block", who = whoModel })
+				end
 			end
 		end
 	end
@@ -399,25 +412,29 @@ function Combat.ApplyDamage(sourcePlayer, target, baseDamage, attackElem, isBasi
 
 			-- shield absorb (ShieldHP/ShieldExpireAt attrs)
 			local afterShield = absorbShield(model, dmg)
-			-- Bow "surge" impact VFX/SFX at the enemy (NOT on shooter)
-			if flags.forcedCrit and RE_CVFX then
-				local rp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-				if rp then
-					RE_CVFX:FireAllClients({ kind = "bow_surge_hit", pos = rp.Position })
-				end
-			end
 
 			-- forced-crit extra crit damage (Bow cadence mastery)
 			if flags.forcedCrit and (flags.critDmgMul or 1) > 1 then
 				afterShield = math.floor(afterShield * flags.critDmgMul + 0.5)
 			end
 
+			-- apply damage
 			if afterShield > 0 then
 				model:SetAttribute("LastHitBy", sourcePlayer and sourcePlayer.UserId or -1)
 				model:SetAttribute("LastCombatDamageAt", os.clock())
 				hum:TakeDamage(afterShield)
-					if sourcePlayer then
-					sourcePlayer:SetAttribute("Dbg_LastApplied", math.max(0, math.floor(afterShield + 0.5)))
+
+				-- Bow surge impact ONLY when hit actually landed (and don't double-fire)
+				if flags.forcedCrit and RE_CVFX then
+					local now = os.clock()
+					local last = lastSurgeFxAt[model] or 0
+					if (now - last) > 0.05 then -- 50ms debounce
+						lastSurgeFxAt[model] = now
+						local rp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+						if rp then
+							RE_CVFX:FireAllClients({ kind = "bow_surge_hit", pos = rp.Position })
+						end
+					end
 				end
 			end
 

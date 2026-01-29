@@ -627,14 +627,28 @@ end
 
 -- === Spawn volumes (optional designer controls) ===
 local function getSpawnVolumes(plot: Model)
-    local arena = plot:FindFirstChild("Arena") or plot
+    -- Your spawn parts are under PlotGround, so search there first.
+    local searchRoots = {
+        plot:FindFirstChild("PlotGround", true),
+		plot:FindFirstChild("Arena", true),
+        plot,
+    }
+
     local function find(name)
-        local p = arena:FindFirstChild(name, true)
-        return (p and p:IsA("BasePart")) and p or nil
+        for _, root in ipairs(searchRoots) do
+            if root then
+                local p = root:FindFirstChild(name, true)
+                if p and p:IsA("BasePart") then
+                    return p
+                end
+            end
+        end
+        return nil
     end
+
     return {
         all    = find("SpawnVol_All"),
-        melee  = find("SpawnVol_Melee"),   -- optional (you didn't add it; that's okay)
+        melee  = find("SpawnVol_Melee") or find("SpawnVol_All"),
         ranged = find("SpawnVol_Ranged"),
         boss   = find("SpawnPoint_Boss"),
         minib  = find("SpawnPoint_MiniBoss"),
@@ -652,6 +666,37 @@ local function samplePointInBox(part: BasePart, bandMin: number?, bandMax: numbe
     local z1 = bandMax or  0.5
     local rz = (z0 + math.random() * (z1 - z0)) * sz.Z
     return (part.CFrame * CFrame.new(rx, ry, rz)).Position
+end
+-- DEBUG: verify the sampled point is inside the box (XZ only; Y is snapped later)
+local function pointInsideBox(box: BasePart, worldPos: Vector3): boolean
+	local p = box.CFrame:PointToObjectSpace(worldPos)
+	return math.abs(p.X) <= box.Size.X * 0.5
+		and math.abs(p.Z) <= box.Size.Z * 0.5
+end
+
+-- Always returns a position that is intended to be inside a SpawnVol
+local function sampleInVolume(vol: BasePart, z0: number?, z1: number?)
+	local pos = samplePointInBox(vol, z0, z1)
+	if not pos then
+		return vol.Position
+	end
+
+	-- DEBUG guard (optional but awesome)
+	if not pointInsideBox(vol, pos) then
+		warn("[SpawnVolDbg] samplePointInBox produced OUTSIDE point??", vol:GetFullName(), pos)
+	end
+
+	return pos
+end
+
+-- If you pass a SpawnPoint_* (point part), use its Position.
+-- If you pass a SpawnVol_* (box), sample inside it.
+local function pickSpawnPosFromRef(ref: BasePart, z0: number?, z1: number?)
+	local n = string.lower(ref.Name)
+	if n:find("spawnpoint") then
+		return ref.Position
+	end
+	return sampleInVolume(ref, z0, z1)
 end
 
 local function lookAtArenaFrom(pos: Vector3, portal: BasePart?)
@@ -682,10 +727,8 @@ local function seekArenaGroundY(anchorPos: Vector3, anchorY: number, exclude: {I
 		if not inst then return false end
 		if inst:IsA("Terrain") then return true end
 		if inst:IsA("BasePart") then
-			-- ignore obvious non-ground
-			local cg = inst.CollisionGroup
-			if cg == "Enemy" or cg == "Hero" then return false end
-			return inst.CanCollide == true -- accept any collidable part as ground
+			-- ONLY accept ground-tagged parts
+			return inst.CanCollide == true and inst.CollisionGroup == "ArenaGround"
 		end
 		return false
 	end
@@ -894,13 +937,18 @@ mirrorPlayerSkillsToHero = function(plot, hero, ownerId)
 	end
 
 	-- defaults for brand-new players (or bad data)
-	if (hero:GetAttribute("WeaponMain") or "") == "" then
+	local heroMain = hero:GetAttribute("WeaponMain")
+	local plrMain  = plr:GetAttribute("WeaponMain")
+
+	if (heroMain == nil or heroMain == "") and (plrMain == nil or plrMain == "") then
 		hero:SetAttribute("WeaponMain","Sword")
-	end
-	local main = string.lower(hero:GetAttribute("WeaponMain"))
-	if main == "sword" and (hero:GetAttribute("WeaponOff") or "") == "" then
 		hero:SetAttribute("WeaponOff","Shield")
-	elseif main ~= "sword" then
+	elseif heroMain == "Sword" then
+		-- keep sword rules consistent
+		if (hero:GetAttribute("WeaponOff") or "") == "" then
+			hero:SetAttribute("WeaponOff","Shield")
+		end
+	elseif heroMain == "Bow" or heroMain == "Mace" then
 		hero:SetAttribute("WeaponOff","")
 	end
 end
@@ -1356,6 +1404,15 @@ local function spawnWave(plot, portal)
 	local waveIdx = plot:GetAttribute("CurrentWave") or 1
 	local W       = Waves.get(waveIdx)
 	local vols    = getSpawnVolumes(plot)
+	-- Safety: spawn volumes must NEVER be collidable
+	for _, ref in pairs({vols.all, vols.melee, vols.ranged, vols.boss, vols.minib}) do
+		if ref and ref:IsA("BasePart") then
+			ref.CanCollide = false
+			ref.CanTouch   = false
+			ref.CanQuery   = false
+			ref.CollisionGroup = "Effects"
+		end
+	end
 
 	-- Early-wave balance scalars (lighter at W1–W5, neutral afterward)
 	local function earlyWaveScalars(w)
@@ -1411,10 +1468,21 @@ local function spawnWave(plot, portal)
 	local isMiniBossWave = (not isBossWave) and (waveIdx % 5 == 0)
 
 	if isBossWave then
-		-- Boss spawns SOLO (no TTL so it can't despawn mid-fight)
-		spawnOne("Basic", "Boss", (vols.boss or vols.all or portal))
+		local spawnRef = vols.boss or vols.all
+		if not spawnRef then
+			warn("[SpawnVol] Missing SpawnPoint_Boss/SpawnVol_All on plot; boss will use plot.PrimaryPart as last resort:", plot.Name)
+			spawnRef = (plot.PrimaryPart or plot:FindFirstChildWhichIsA("BasePart"))
+		end
+		if not spawnRef then
+			warn("[SpawnVol] No fallback BasePart found; abort boss spawn:", plot.Name)
+			return
+		end
+
+		local worldPos = pickSpawnPosFromRef(spawnRef, nil, nil)
+		spawnOne("Basic", "Boss", worldPos)
 		return
 	end
+
 
 	if isMiniBossWave then
 		-- two minions now (eased HP/DMG), then MiniBoss 5s later
@@ -1423,16 +1491,34 @@ local function spawnWave(plot, portal)
 		local k2 = pool[math.random(1,#pool)]
 
 		local function volFor(kind)
-			local k = string.lower(kind)
+			local k = string.lower(tostring(kind))
 			if (k == "archer" or k:find("ranged")) and vols.ranged then return vols.ranged end
-			if (k == "runner" or k == "basic") and vols.melee then return vols.melee end
-			return vols.all or portal
+			if (k == "runner" or k == "basic" or k == "melee") and vols.melee then return vols.melee end
+			return vols.all -- ✅ NEVER portal fallback
 		end
 
 		local function spawnMinion(kind)
-			local target   = volFor(kind)
-			local worldPos = target and samplePointInBox(target) or portal.Position
-			local e, gy    = spawnOne(kind, nil, worldPos)
+			local target = volFor(kind)
+			if not target then
+				warn("[SpawnVol] Missing SpawnVol for miniboss minion; using SpawnVol_All fallback:", plot.Name)
+				target = vols.all
+			end
+			if not target then
+				warn("[SpawnVol] No SpawnVol_All found; abort minion spawn:", plot.Name)
+				return nil
+			end
+
+			-- ✅ always sample INSIDE the volume
+			local worldPos
+			if target == vols.ranged then
+				worldPos = sampleInVolume(target, -0.5, -0.10)
+			elseif target == vols.melee then
+				worldPos = sampleInVolume(target, 0.00, 0.50)
+			else
+				worldPos = sampleInVolume(target)
+			end
+
+			local e, gy = spawnOne(kind, nil, worldPos)
 			if e then
 				local hum = e:FindFirstChildOfClass("Humanoid")
 				if hum then
@@ -1453,8 +1539,15 @@ local function spawnWave(plot, portal)
 		spawnMinion(k2)
 
 		task.delay(5, function()
-			spawnOne("Basic", "MiniBoss", (vols.minib or vols.all or portal))
-			-- (no TTL on miniboss)
+			local spawnRef = vols.minib or vols.all
+			if not spawnRef then
+				warn("[SpawnVol] Missing SpawnPoint_MiniBoss and SpawnVol_All; abort miniboss spawn:", plot.Name)
+				return
+			end
+
+			-- SpawnPoint_* = exact position, SpawnVol_* = sample inside
+			local worldPos = pickSpawnPosFromRef(spawnRef, nil, nil)
+			spawnOne("Basic", "MiniBoss", worldPos)
 		end)
 
 		return
@@ -1488,14 +1581,13 @@ local function spawnWave(plot, portal)
 				elseif targetPart == vols.melee then
 					z0, z1 =  0.00,  0.50
 				end
-				worldPos = samplePointInBox(targetPart, z0, z1)
+				worldPos = sampleInVolume(targetPart, z0, z1)
 			end
 
 			-- Fallback: old scatter if no volumes existed
 			if not worldPos then
-				local fwd = portal.CFrame.LookVector
-				local lateral = math.random(-6, 6)
-				worldPos = portal.Position - fwd * (8 + spawnIndex * BETWEEN_SPAWN_Z) + Vector3.new(lateral, 0, 0)
+				warn("[SpawnVolDbg] No spawn volume found; aborting this spawn:", plot.Name, "kind=", tostring(kind))
+				continue
 			end
 
 			-- place + face toward portal (or portal anchor fallback)
